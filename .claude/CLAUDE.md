@@ -16,6 +16,8 @@ Origin: https://github.com/zodac/ai-sandbox. Repo map:
 - `examples/android-gradle` (from DiceFive) and `examples/java-maven` (from Diurnal) - complete
   project configurations, both built and verified.
 - `scripts/update-versions.sh` - pin bumps for the base and project Dockerfiles.
+- `VERSION` + `.github/workflows/publish.yml` - every push to `master` is tagged X.Y.Z and released, then
+  VERSION is bumped (same mechanism as code-quality-config). Consuming projects pin a tag, never a branch.
 
 The four `sandbox-*/` directories in the repo root are the per-project sandboxes this repo replaces -
 reference material only (git-ignored), to be deleted once everything has been migrated:

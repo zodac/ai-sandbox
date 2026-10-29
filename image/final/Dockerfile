@@ -57,6 +57,12 @@ LABEL net.zodac.sandbox.claude-code-version="${CLAUDE_CODE_VERSION}"
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=0755 launch.sh     /usr/local/bin/sandbox-launch.sh
 COPY --chmod=0755 setup.sh      /usr/local/bin/sandbox-setup.sh
+# Persistent shell history for interactive shells (see bashrc.sh). Sourced LAST from dev's ~/.bashrc,
+# so its sizes win over the Debian skeleton's defaults; the line is appended once, at image build.
+# Into /etc itself, not a new /etc/ai-sandbox/: COPY --chmod applies the mode to a directory it creates
+# too, and a 0644 directory cannot be entered by `dev`.
+COPY --chmod=0644 bashrc.sh     /etc/ai-sandbox-bashrc.sh
+RUN echo '[[ -f /etc/ai-sandbox-bashrc.sh ]] && . /etc/ai-sandbox-bashrc.sh' >> /home/dev/.bashrc
 
 WORKDIR /work
 

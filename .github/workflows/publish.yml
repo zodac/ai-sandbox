@@ -1,0 +1,102 @@
+name: Publish
+
+# Every push to master that changes the sandbox itself is a release: it is tagged with the version in
+# VERSION (X.Y.Z), gets a GitHub release with a changelog of the commits since the previous tag
+# (grouped by their `[Category]` prefix), and VERSION is bumped to the next patch for the release after.
+# Projects consuming this repo as a submodule are moved to the highest X.Y.Z tag by their own update
+# scripts, so a tag - never a branch's newest commit - is what a project pins.
+#
+# A minor or major release is a hand edit of VERSION before the push that should carry it.
+
+on:
+  push:
+    branches: [ master ]
+    paths-ignore:
+      - ".claude/**"
+      - "README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      changelog_content: ""
+      has_changes: "false"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0 # Needed for pushing tags
+
+      - name: Fetch tags
+        run: git fetch --tags
+
+      - name: Configure git user
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+      - name: Read current version
+        id: version
+        run: |
+          version=$(cat VERSION)
+          echo "Using version: ${version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Get previous tag
+        id: prev_tag
+        run: |
+          set +e
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null)
+          EXIT_CODE=$?
+          set -e
+
+          if [ $EXIT_CODE -ne 0 ] || [ -z "${PREV_TAG}" ]; then
+            echo "No previous tag found, using empty string"
+            PREV_TAG=""
+          fi
+
+          echo "prev_tag=${PREV_TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Generate categorized changelog
+        id: changelog
+        run: .github/scripts/generate_changelog.sh "${{ steps.prev_tag.outputs.prev_tag
+          }}"
+
+      - name: Bump patch version in VERSION file
+        run: .github/scripts/bump_version.sh "${{ steps.version.outputs.version }}"
+
+      - name: Tag current version in git
+        if: env.has_changes == 'true'
+        run: git tag ${{ steps.version.outputs.version }}
+
+      - name: Push commit and tag if there were changes
+        if: env.has_changes == 'true'
+        uses: ad-m/github-push-action@v1.3.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: master
+          tags: "true"
+
+      - name: Create GitHub Release
+        if: env.has_changes == 'true'
+        uses: ncipollo/release-action@v1.21.0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          name: v${{ steps.version.outputs.version }}
+          tag: ${{ steps.version.outputs.version }}
+          body: |
+            ## Changes since ${{ steps.prev_tag.outputs.prev_tag }}:
+
+            ${{ env.changelog_content }}
+
+      - name: Summary
+        if: env.has_changes == 'true'
+        run: |
+          echo "GitHub release created for version: ${{ steps.version.outputs.version }}"

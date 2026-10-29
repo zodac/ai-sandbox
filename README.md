@@ -201,13 +201,17 @@ than after IntelliJ has escalated to SIGKILL. `--rm` then removes the container,
 
 | Mount                                       | Kind             | Holds                                                         |
 | ------------------------------------------- | ---------------- | ------------------------------------------------------------- |
-| `ai-sandbox-configuration/.claude-history/` | bind-mounted dir | Claude auth, session transcripts, memory, onboarding state    |
+| `ai-sandbox-configuration/.claude-history/` | bind-mounted dir | Claude auth, session transcripts, memory, onboarding state; the shell history |
 | `<name>-docker`                             | named volume     | the nested Docker's images/layers/build cache                 |
 | `<name>-<cache>`                            | named volume     | each `SANDBOX_CACHE_VOLUMES` entry (`~/.m2`, `~/.gradle`, ...) |
 
 `.claude-history/` is a plain directory in the checkout (with a `*` `.gitignore` of its own, so no
 project `.gitignore` needs to know about it): inspect it with `ls`, back it up with `cp -r`, wipe it
 with `rm -rf`. The rest are pure rebuildable caches, so they stay named volumes.
+
+**Shell history** (`shell`, `attach`, and any interactive bash in the sandbox) is kept in
+`.claude-history/.sandbox-state/bash_history` and written after every command, so it survives a
+closed tab, a re-attach and a new container alike.
 
 **The `-docker` volume is the one that grows.** Every nested build leaves layers and BuildKit cache
 behind; measured at 77 GB on a two-month-old sandbox of a build-heavy project. The image bakes in a
@@ -232,6 +236,14 @@ project's are the project's.
 > If configuration ever moves from Dockerfiles to declarative package lists (apt/pip files), the
 > version tooling — this script and the projects' own — needs a new solution: it depends on the
 > Dockerfile shape above.
+
+## Releases
+
+Every push to `master` (other than `README.md`- or `.claude/`-only changes) is released by
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml): it is tagged with the version in
+[`VERSION`](VERSION), gets a GitHub release with a changelog grouped by commit `[Category]`, and `VERSION`
+is bumped to the next patch. For a minor or major release, edit `VERSION` before pushing. Projects pin a
+**tag** of this repo as their submodule, and move to the newest one with their own update scripts.
 
 ## Notes
 
