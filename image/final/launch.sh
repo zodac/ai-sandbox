@@ -97,30 +97,36 @@ fi
 #     then runs claude by hand (or any nested invocation) would otherwise be back
 #     to prompting. Safe for the same reason the flag is: the sandbox is
 #     disposable and only /work is mounted from the host.
-#   • `cleanupPeriodDays=14` — session transcripts and their side-car dirs
-#     (file-history, tool results) older than two weeks are deleted at startup,
-#     so ai-sandbox-configuration/.claude-history does not grow past a few hundred MB. Memory
-#     (projects/*/memory) and settings are not session data and are kept.
+#   • `cleanupPeriodDays` — session transcripts and their side-car dirs
+#     (file-history, tool results) older than this many days are deleted at
+#     startup, so ai-sandbox-configuration/.claude-history does not grow without
+#     bound. Memory (projects/*/memory) and settings are not session data and are
+#     kept. SANDBOX_HISTORY_DAYS (sandbox.conf; validated by sandbox.sh) sets it,
+#     14 by default.
 # Because that file lives in the persisted volume (not the image), we re-assert
 # on every launch rather than baking it into the Dockerfile (the volume mount
 # would shadow anything the image wrote there). The jq merge preserves any other
 # keys and is a cheap no-op once set.
 SETTINGS="${CCD}/settings.json"
+HISTORY_DAYS="${SANDBOX_HISTORY_DAYS:-14}"
+[[ "${HISTORY_DAYS}" =~ ^[1-9][0-9]*$ ]] || HISTORY_DAYS=14
 if command -v jq >/dev/null 2>&1; then
   base='{}'
   [[ -s "${SETTINGS}" ]] && jq -e . "${SETTINGS}" >/dev/null 2>&1 && base="$(cat "${SETTINGS}")"
   if ! printf '%s' "${base}" \
-        | jq -e '.remoteControlAtStartup == true and .daemonColdStart == "transient"
-                 and .permissions.defaultMode == "bypassPermissions"
-                 and .cleanupPeriodDays == 14' >/dev/null 2>&1; then
+        | jq -e --argjson days "${HISTORY_DAYS}" \
+            '.remoteControlAtStartup == true and .daemonColdStart == "transient"
+             and .permissions.defaultMode == "bypassPermissions"
+             and .cleanupPeriodDays == $days' >/dev/null 2>&1; then
     tmp="${SETTINGS}.tmp.$$"
     if printf '%s' "${base}" \
-         | jq '.remoteControlAtStartup = true
-               | .daemonColdStart = "transient"
-               | .permissions.defaultMode = "bypassPermissions"
-               | .cleanupPeriodDays = 14' > "${tmp}" 2>/dev/null; then
+         | jq --argjson days "${HISTORY_DAYS}" \
+             '.remoteControlAtStartup = true
+              | .daemonColdStart = "transient"
+              | .permissions.defaultMode = "bypassPermissions"
+              | .cleanupPeriodDays = $days' > "${tmp}" 2>/dev/null; then
       mv -f "${tmp}" "${SETTINGS}" \
-        && echo "[sandbox] asserted sandbox defaults (Remote Control at startup, permissions bypassed, 14-day history)"
+        && echo "[sandbox] asserted sandbox defaults (Remote Control at startup, permissions bypassed, ${HISTORY_DAYS}-day history)"
     else
       rm -f "${tmp}"
       echo "[sandbox] WARN: could not update ${SETTINGS} with the sandbox defaults" >&2

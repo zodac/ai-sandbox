@@ -24,7 +24,7 @@ IntelliJ with a plain Shell Script run configuration.
 ```bash
 cd <project>
 git submodule add https://github.com/zodac/ai-sandbox.git ai-sandbox
-ai-sandbox/sandbox.sh init      # creates ai-sandbox-configuration/ and .run/ (never overwrites)
+ai-sandbox/sandbox.sh init      # creates ai-sandbox-configuration/ (with empty bin/, entrypoint.d/, setup.d/) and .run/ - never overwrites
 ```
 
 Then edit `ai-sandbox-configuration/sandbox.conf` (and its `Dockerfile` if the project needs a JDK,
@@ -154,6 +154,7 @@ overrides it (`SANDBOX_PORTS= ai-sandbox/sandbox.sh` publishes nothing, once).
 | `SANDBOX_NPM_DIRS`      | *(empty)*      | dirs (relative to the project, `.` = root) to `npm install` on open, when the lockfile changed |
 | `SANDBOX_ENV`           | *(empty)*      | extra `KEY=VALUE` environment (no spaces inside a value)                                      |
 | `SANDBOX_RUN_ARGS`      | *(empty)*      | extra `docker run` flags, passed through as-is                                                |
+| `SANDBOX_HISTORY_DAYS`  | `14`           | days of Claude session history (transcripts, file history, tool results) to keep; older is deleted at startup |
 | `SANDBOX_NAME`          | derived        | pin the docker name prefix instead of deriving it from the checkout's path                    |
 | `SANDBOX_TZ`            | host's zone    | the sandbox's timezone (IANA name)                                                            |
 
@@ -167,7 +168,7 @@ applies the host's timezone, hands the mount points to `dev`, and runs the proje
 `entrypoint.d/*.sh` (in name order; a failure is reported, not fatal). Then, as `dev`,
 [`launch.sh`](image/final/launch.sh) recovers Claude's login from its own snapshot if an abrupt
 teardown lost it, and re-asserts the sandbox's Claude settings (Remote Control at startup, permissions
-bypassed, 14-day transcript cleanup).
+bypassed, and the `SANDBOX_HISTORY_DAYS` transcript cleanup).
 
 Every **interactive** open (not `run <cmd>`) then runs [`setup.sh`](image/final/setup.sh), whose
 steps are guarded so a re-open is a fast no-op:

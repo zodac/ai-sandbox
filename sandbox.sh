@@ -35,7 +35,8 @@ CONFIG_DIR="${SANDBOX_CONFIG_DIR:-${PROJECT_DIR}/ai-sandbox-configuration}"
 # `SANDBOX_PORTS= ai-sandbox/sandbox.sh` still works - hence saving the environment's values before
 # sourcing and putting them back after. Set-but-empty counts as set (an empty SANDBOX_PORTS means
 # "publish nothing", which must be able to override a file that publishes something).
-SETTINGS=(SANDBOX_NAME SANDBOX_PORTS SANDBOX_CACHE_VOLUMES SANDBOX_NPM_DIRS SANDBOX_ENV SANDBOX_RUN_ARGS SANDBOX_TZ)
+SETTINGS=(SANDBOX_NAME SANDBOX_PORTS SANDBOX_CACHE_VOLUMES SANDBOX_NPM_DIRS SANDBOX_ENV SANDBOX_RUN_ARGS SANDBOX_TZ
+          SANDBOX_HISTORY_DAYS)
 declare -A FROM_ENV=()
 for setting in "${SETTINGS[@]}"; do
   if [[ -n "${!setting+set}" ]]; then FROM_ENV["${setting}"]="${!setting}"; fi
@@ -102,6 +103,16 @@ read -ra EXTRA_ENV <<< "${SANDBOX_ENV-}"
 ENV_ARGS=()
 for pair in ${EXTRA_ENV+"${EXTRA_ENV[@]}"}; do ENV_ARGS+=(-e "${pair}"); done
 read -ra RUN_ARGS <<< "${SANDBOX_RUN_ARGS-}"
+
+# How many days of Claude session history (transcripts and their file-history / tool-result side-cars)
+# to keep in .claude-history: launch.sh sets it as Claude's `cleanupPeriodDays`, and Claude deletes
+# anything older at startup. Memory and settings are not session data and are always kept. Checked
+# here, on the host, so a typo fails the launch loudly rather than silently keeping the default.
+SANDBOX_HISTORY_DAYS="${SANDBOX_HISTORY_DAYS:-14}"
+if [[ ! "${SANDBOX_HISTORY_DAYS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "[sandbox] SANDBOX_HISTORY_DAYS must be a whole number of days (1 or more), not '${SANDBOX_HISTORY_DAYS}'" >&2
+  exit 1
+fi
 
 # The host's timezone, so the sandbox's clock reads the same as the machine it runs on: dates in test
 # output, screenshots and an emulator's clock. An IANA name ("Pacific/Auckland"). SANDBOX_TZ overrides
@@ -387,6 +398,7 @@ run() {
     -e TZ="${SANDBOX_TIMEZONE}" \
     -e SANDBOX_CACHE_PATHS="${CACHE_PATHS[*]-}" \
     -e SANDBOX_NPM_DIRS="${SANDBOX_NPM_DIRS-}" \
+    -e SANDBOX_HISTORY_DAYS="${SANDBOX_HISTORY_DAYS}" \
     ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
     -v "$(to_docker_path "${PROJECT_DIR}")":/work \
     -v "$(to_docker_path "${CONFIG_DIR}")":/opt/ai-sandbox/config \

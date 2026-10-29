@@ -1,4 +1,4 @@
- # ai-sandbox
+# ai-sandbox
 
 A reusable, disposable Docker sandbox for running AI agents (mostly Claude Code with
 `--dangerously-skip-permissions`) against a project, isolated from the host. A project consumes this
