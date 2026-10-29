@@ -11,9 +11,12 @@ name: Publish
 on:
   push:
     branches: [ master ]
+    # Documentation alone is not a release: GitHub skips the run only when EVERY file the push changed
+    # matches one of these, so a push mixing docs with anything else still releases (and its changelog
+    # lists the doc commits too).
     paths-ignore:
-      - ".claude/**"
-      - "README.md"
+      - ".claude/**" # Claude's own instructions for this repo (CLAUDE.md and the like)
+      - "**.md"      # any Markdown file, anywhere - README.md included
   workflow_dispatch:
 
 permissions:

@@ -239,7 +239,7 @@ project's are the project's.
 
 ## Releases
 
-Every push to `master` (other than `README.md`- or `.claude/`-only changes) is released by
+Every push to `master` that changes more than documentation (Markdown files and `.claude/`) is released by
 [`.github/workflows/publish.yml`](.github/workflows/publish.yml): it is tagged with the version in
 [`VERSION`](VERSION), gets a GitHub release with a changelog grouped by commit `[Category]`, and `VERSION`
 is bumped to the next patch. For a minor or major release, edit `VERSION` before pushing. Projects pin a
