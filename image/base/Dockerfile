@@ -197,6 +197,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,t
 #
 # unzip: needed often enough by sessions (and by project scripts) to be worth carrying everywhere.
 #
+# vim: a terminal editor, without which a bare `git commit` or `git rebase -i` fails outright - the image
+#   otherwise has none, and the host's core.editor is carried over (see export_git_config in sandbox.sh).
+#   Also provides `vi`, git's fallback when no editor is configured.
+#
 # gh is the GitHub CLI, so a session can read the CI run it just triggered (`gh run view --log-failed`)
 # rather than asking someone to paste the log in. Debian's own package, not GitHub's apt repo: the repo
 # would cost a keyring + sources step and a volatile pin for a tool nothing builds against. The
@@ -219,7 +223,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,t
         python3-venv="3.13.5-1" \
         sudo="1.9.16p2-3+deb13u2" \
         tzdata="2026e-0+deb13u1" \
-        unzip="6.0-29+deb13u1"
+        unzip="6.0-29+deb13u1" \
+        vim="2:9.1.1230-2+deb13u1"
 # END DEBIAN PACKAGES
 
 # ── Node (copied from the node stage above) ───────────────────────────────────

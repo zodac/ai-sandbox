@@ -22,7 +22,8 @@
 #
 # Only the project directory is mounted from the host. No $HOME, no SSH keys, no other projects, and
 # NOT the host Docker socket. The sandbox runs its own nested Docker daemon, so any container a session
-# spins up lives and dies inside this disposable container.
+# spins up lives and dies inside this disposable container. (Of the host's settings, only a sanitised
+# copy of the global git config goes in - see export_git_config.)
 set -euo pipefail
 
 # This script lives in <project>/<submodule>/, so the project root is its parent dir.
@@ -264,6 +265,53 @@ ensure_config() {
   fi
 }
 
+# Hand the host's global git settings (identity, aliases, push/pull preferences, global ignores) to the
+# sandbox, so they need no configuring in there. A sanitised COPY rather than a mount of ~/.gitconfig:
+#   - it keeps the "no $HOME" rule, and needs no new mount - .sandbox-state is already in the bind-mounted
+#     .claude-history, so this works unchanged on every host (launch.sh installs the copy at start);
+#   - a single-file mount would break `git config --global` inside (git replaces the file by rename);
+#   - plenty of a host's config is secret, or names something that does not exist in here, and some of
+#     that would break git rather than merely go unused (see the case below).
+# Rewritten on every launch, so an edit on the host is picked up and a removed setting does not linger.
+# `--includes` inlines included files, and running in the project applies an includeIf "gitdir:..." the
+# way the host would (a work identity for a work checkout). The project's own .git/config still wins.
+export_git_config() {
+  local state="${CLAUDE_HISTORY_DIR}/.sandbox-state" entry key value excludes=""
+  mkdir -p "${state}"
+  rm -f "${state}/host-gitconfig" "${state}/host-gitignore"
+  command -v git >/dev/null 2>&1 || return 0
+
+  # --null: entries end in NUL, the key ends at the first newline, and no newline at all means a
+  # valueless key (git's shorthand for true). Multi-valued keys arrive in order, hence --add.
+  while IFS= read -r -d '' entry; do
+    key="${entry%%$'\n'*}"
+    if [[ "${entry}" == *$'\n'* ]]; then value="${entry#*$'\n'}"; else value=true; fi
+    case "${key,,}" in
+      # Secrets, or the way to reach them. The sandbox ships no credentials (see the README's Notes), and
+      # a url.*.insteadOf would rewrite HTTPS remotes to SSH, which the image has no client for.
+      credential.*|http.*|url.*|sendemail.*|*token*|*passw*|*secret*) continue ;;
+      # Signing: the key is not in here, so every commit would fail.
+      gpg.*|user.signingkey|commit.gpgsign|tag.gpgsign|tag.forcesignannotated|push.gpgsign) continue ;;
+      # Host programs. A required filter (git-lfs's, by default) fails every checkout without its binary.
+      filter.*|core.sshcommand|core.askpass|core.fsmonitor|core.pager|interactive.difffilter) continue ;;
+      # Host paths, and include directives whose content --includes has already inlined. The excludes
+      # file is copied separately below.
+      include.*|includeif.*|safe.*|core.hookspath|core.excludesfile|core.attributesfile|init.templatedir) continue ;;
+    esac
+    git config --file "${state}/host-gitconfig" --add -- "${key}" "${value}" \
+      || echo "[sandbox] WARN: could not copy the git setting ${key} to the sandbox" >&2
+  done < <(git -C "${PROJECT_DIR}" config --global --includes --null --list 2>/dev/null || true)
+
+  # The global ignore file, which the copy above deliberately does not point at: installed at git's
+  # default location, it applies without any setting.
+  excludes="$(git -C "${PROJECT_DIR}" config --global --includes --path core.excludesFile 2>/dev/null || true)"
+  excludes="${excludes:-${XDG_CONFIG_HOME:-${HOME}/.config}/git/ignore}"
+  if [[ -r "${excludes}" ]]; then
+    cp "${excludes}" "${state}/host-gitignore" \
+      || echo "[sandbox] WARN: could not copy the global git ignore file to the sandbox" >&2
+  fi
+}
+
 # Stop and remove whatever container is already holding our name, and wait until the name is actually
 # free again. Reports what it did in REMOVED_EXISTING (1 = removed something, 0 = there was nothing) —
 # a variable rather than an exit status, because a function called as an `if`/`||` condition runs with
@@ -339,6 +387,7 @@ run() {
     exit 1
   fi
   ensure_config
+  export_git_config
 
   # Always (re)build before launching so every session runs the latest image. Docker's layer
   # cache makes this a near-instant no-op when nothing in the build context has changed.

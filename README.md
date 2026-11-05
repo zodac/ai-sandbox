@@ -74,7 +74,8 @@ because the project is always mounted at the same `/work`.
 ## Why this is safe
 
 - **Only the project directory is mounted** (→ `/work`, plus its configuration again at
-  `/opt/ai-sandbox/config`). No `$HOME`, no SSH keys, no other projects are visible to the agent.
+  `/opt/ai-sandbox/config`). No `$HOME`, no SSH keys, no other projects are visible to the agent. The
+  one thing copied in from the host's home is a sanitised git config (see *Notes*).
 - **The host Docker socket is NOT mounted.** The sandbox runs its *own* nested Docker daemon, so any
   container a session spins up lives and dies *inside* the sandbox.
 - **Runs as a non-root user** (`dev`, matching your host UID/GID) so files written under `/work` stay
@@ -247,6 +248,16 @@ is bumped to the next patch. For a minor or major release, edit `VERSION` before
 
 ## Notes
 
+- **The host's git settings are copied in on every launch**, so identity, aliases and preferences need
+  no configuring in the sandbox: `git config --global --includes` and the global ignore file, as of that
+  launch, with a repository's own `.git/config` still taking precedence. Left out are credentials and
+  URL rewrites, anything matching token/password/secret, commit signing, LFS and other host programs,
+  and host paths ([`export_git_config`](sandbox.sh) has the list). Aliases are copied as they are, so
+  keep secrets out of them. A `git config --global` in a session lasts until the container goes. The base
+  image has `vim` (and so `vi`); a host `core.editor` naming anything else needs adding to the project's
+  Dockerfile.
+- **This is settings, not access: a sandbox can commit but not push.** The image has no SSH client and
+  no credentials, so pushing or fetching a private remote needs a `gh auth login` and an HTTPS remote.
 - **`gh` ships no credentials, and nothing persists any.** A `gh auth login` is entered per session and
   dies with the container. That is deliberate: adding a token passthrough or a volume for
   `~/.config/gh` is a policy decision that has already been taken the other way.

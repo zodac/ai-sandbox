@@ -134,6 +134,21 @@ if command -v jq >/dev/null 2>&1; then
   fi
 fi
 
+# ── The host's git settings ──────────────────────────────────────────────────
+# sandbox.sh leaves a sanitised copy of the host's global git config (and global ignore file) in
+# .sandbox-state on every launch: see export_git_config there for what is left out and why. Installed
+# as ordinary files in the container, so a `git config --global` in a session works and lasts as long
+# as the container; before the setup below, whose submodule init runs git. A repository's own
+# .git/config still takes precedence over these.
+if [[ -f "${SNAP}/host-gitconfig" ]]; then
+  cp "${SNAP}/host-gitconfig" "${HOME}/.gitconfig" \
+    || echo "[sandbox] WARN: could not install the host's git config" >&2
+fi
+if [[ -f "${SNAP}/host-gitignore" ]]; then
+  mkdir -p "${HOME}/.config/git" && cp "${SNAP}/host-gitignore" "${HOME}/.config/git/ignore" \
+    || echo "[sandbox] WARN: could not install the host's global git ignore file" >&2
+fi
+
 if [[ "${RUN_SETUP:-0}" = "1" ]]; then
   /usr/local/bin/sandbox-setup.sh || true
 fi

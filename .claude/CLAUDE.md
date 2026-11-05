@@ -79,6 +79,9 @@ reference material only (git-ignored), to be deleted once everything has been mi
 - **Shell history** (interactive bash only) lives in `.claude-history/.sandbox-state/bash_history`,
   appended per command (`image/final/bashrc.sh`), because a closed IntelliJ tab kills `docker exec`
   without bash ever saving.
+- **Git settings** are a sanitised copy of the host's global config (`export_git_config` in `sandbox.sh`,
+  installed by `launch.sh` via `.sandbox-state`), not a mount of `~/.gitconfig`. Credentials stay out: the
+  sandbox can commit but not push (no SSH client, per-session `gh auth login`).
 - **History retention** is `SANDBOX_HISTORY_DAYS` in `sandbox.conf` (default 14) → Claude's
   `cleanupPeriodDays`, validated on the host so a typo fails loudly.
 
