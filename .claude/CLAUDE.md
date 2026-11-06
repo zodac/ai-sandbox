@@ -7,8 +7,9 @@ Script run configuration pointing at `$PROJECT_DIR$/ai-sandbox/sandbox.sh`.
 
 ## Status
 
-Released as `1.0.0` (2026-10-29). **DiceFive is migrated** (its commit `3ac5e510`); Diurnal, Home Theatre
-and Spring Boot are not yet - the user will ask to continue later (see *Remaining migrations* below).
+Released as `1.0.0` (2026-10-29). **DiceFive is migrated** (its commit `3ac5e510`), and so is **Diurnal**
+(2026-11-06); Home Theatre and Spring Boot are not yet - the user will ask to continue later (see
+*Remaining migrations* below).
 Origin: https://github.com/zodac/ai-sandbox. Repo map:
 
 - `sandbox.sh` - the host launcher (all commands; `init` scaffolds a project).
@@ -17,8 +18,9 @@ Origin: https://github.com/zodac/ai-sandbox. Repo map:
 - `examples/android-gradle` (from DiceFive) and `examples/java-maven` (from Diurnal) - complete
   project configurations, both built and verified.
 - `scripts/update-versions.sh` - pin bumps for the base and project Dockerfiles.
-- `VERSION` + `.github/workflows/publish.yml` - every push to `master` is tagged X.Y.Z and released, then
-  VERSION is bumped (same mechanism as code-quality-config). Consuming projects pin a tag, never a branch.
+- `VERSION` + `.github/workflows/publish.yml` - every push to `master` is built, tagged X.Y.Z and released,
+  then VERSION is bumped (same mechanism as code-quality-config). Consuming projects pin a tag, never a
+  branch. `.github/workflows/update_versions.yml` bumps the pins monthly: a dead Debian pin breaks a clean build.
 
 The four `sandbox-*/` directories in the repo root are the per-project sandboxes this repo replaces -
 reference material only (git-ignored), to be deleted once everything has been migrated:
@@ -124,14 +126,8 @@ project's own commit skill/conventions; DiceFive's default branch is `main`, not
 
 ## Remaining migrations
 
-All three are on `master` and still have a `sandbox/` directory. Start from `examples/java-maven`.
+Both are on `master` and still have a `sandbox/` directory. Start from `examples/java-maven`.
 
-- **Diurnal** - its history is at the project ROOT (`<project>/.claude-history/`, not under `sandbox/`), so
-  rsync from there. JDK 26 + Maven, port `8071:8081`, `SANDBOX_NPM_DIRS="frontend ."`, Playwright (libs in the
-  Dockerfile, browser via `setup.d/20-playwright.sh`), brand tooling (imagemagick/librsvg/optipng/fonttools).
-  References `sandbox/` in: `.gitignore`, `.dockerignore`, `.github/workflows/docker.yml`,
-  `.github/scripts/update_dependency_versions.sh`, `.github/scripts/lint_and_tests.sh`,
-  `code-quality-config-overrides/qodana.yaml`, `.claude/CLAUDE.md`, `.claude/hooks/tests/run-hook-tests.sh`.
 - **Home Theatre** - like Diurnal (no port); its `sandbox/update_versions.sh` is replaced by
   `ai-sandbox/sandbox.sh update-versions`. References in `.claude/CLAUDE.md`,
   `.claude/reference/{deployment-topology,no-personal-info}.md`, `.claude/hooks/tests/run-hook-tests.sh`.
@@ -150,7 +146,8 @@ All three are on `master` and still have a `sandbox/` directory. Start from `exa
 
 ## Gotchas learned
 
-- On this host `diff` is aliased to `git diff --word-diff`: use `command diff` for real file diffs.
+- On this host `diff` is aliased to `git diff --word-diff`: use `command diff` for real file diffs. `env` is
+  aliased to `env | sort` too: use `command env` to run something with extra variables.
 - `COPY --chmod=0644 f /new/dir/f` applies the mode to the directory it creates too, making it
   untraversable - copy into an existing directory.
 - `cmd || warn "... $(basename x) ... $?"` reports 0: the command substitution resets `$?`. Capture

@@ -27,24 +27,33 @@ else
   skip "git submodules"
 fi
 
-# ── 2. npm install — for every dir in SANDBOX_NPM_DIRS that HAS a package.json ─
+# ── 2. npm — for every dir in SANDBOX_NPM_DIRS that HAS a package.json ───────
 # Opt-in (SANDBOX_NPM_DIRS in sandbox.conf: space-separated, relative to /work, "." = the root), and
-# even then detected rather than assumed: `npm --prefix X install` against a missing X still WRITES
+# even then checked rather than assumed: `npm --prefix X install` against a missing X still WRITES
 # `X/package-lock.json` before it errors, so an unguarded install litters the project with a stray
-# lockfile. Re-runs only when the lockfile changes (or node_modules is gone).
+# lockfile. An entry with no package.json is a mistake in the settings, so it warns. Re-runs only when
+# the lockfile changes (or node_modules is gone).
 read -ra npm_dirs <<< "${SANDBOX_NPM_DIRS-}"
 npm_found=0
 for dir in ${npm_dirs+"${npm_dirs[@]}"}; do
-  [[ -f "${dir}/package.json" ]] || continue
+  if [[ ! -f "${dir}/package.json" ]]; then
+    warn "SANDBOX_NPM_DIRS names ${dir}, which has no package.json"
+    continue
+  fi
   npm_found=1
   hash_file="${STATE_DIR}/npm-${dir//[^a-zA-Z0-9]/-}.sha"
   current_hash="$(sha256sum "${dir}/package-lock.json" 2>/dev/null | cut -d' ' -f1)"
   if [[ ! -d "${dir}/node_modules" ]] || [[ "${current_hash}" != "$(cat "${hash_file}" 2>/dev/null || true)" ]]; then
-    step "running npm install in ${dir}..."
-    if npm --prefix "${dir}" install --no-audit --no-fund; then
+    # `ci` wherever there is a lockfile: `install` trusts node_modules/.package-lock.json over what is
+    # actually on disk, so it reports "up to date" on a tree the hidden lockfile misdescribes, and it can
+    # rewrite the project's lockfile as well. `ci` rebuilds node_modules from the real one.
+    npm_command=install
+    if [[ -f "${dir}/package-lock.json" ]]; then npm_command=ci; fi
+    step "running npm ${npm_command} in ${dir}..."
+    if npm --prefix "${dir}" "${npm_command}" --no-audit --no-fund; then
       echo "${current_hash}" > "${hash_file}"
     else
-      warn "npm install failed in ${dir}"
+      warn "npm ${npm_command} failed in ${dir}"
     fi
   else
     skip "npm dependencies (${dir})"

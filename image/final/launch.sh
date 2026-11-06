@@ -87,7 +87,8 @@ fi
 # Four Claude user settings (settings.json under CLAUDE_CONFIG_DIR), none of
 # which has a CLI flag that covers every launch path:
 #   • `remoteControlAtStartup` — "Start Remote Control bridge automatically each
-#     session".
+#     session". SANDBOX_REMOTE_CONTROL (sandbox.conf; validated by sandbox.sh) sets
+#     it, on by default.
 #   • `daemonColdStart=transient` — spawns the background bridge for this login
 #     session without the interactive "install it persistently?" prompt, so it
 #     also works for non-TTY sessions.
@@ -110,23 +111,25 @@ fi
 SETTINGS="${CCD}/settings.json"
 HISTORY_DAYS="${SANDBOX_HISTORY_DAYS:-14}"
 [[ "${HISTORY_DAYS}" =~ ^[1-9][0-9]*$ ]] || HISTORY_DAYS=14
+REMOTE_CONTROL="${SANDBOX_REMOTE_CONTROL:-true}"
+[[ "${REMOTE_CONTROL}" == "false" ]] || REMOTE_CONTROL=true
 if command -v jq >/dev/null 2>&1; then
   base='{}'
   [[ -s "${SETTINGS}" ]] && jq -e . "${SETTINGS}" >/dev/null 2>&1 && base="$(cat "${SETTINGS}")"
   if ! printf '%s' "${base}" \
-        | jq -e --argjson days "${HISTORY_DAYS}" \
-            '.remoteControlAtStartup == true and .daemonColdStart == "transient"
+        | jq -e --argjson days "${HISTORY_DAYS}" --argjson remote "${REMOTE_CONTROL}" \
+            '.remoteControlAtStartup == $remote and .daemonColdStart == "transient"
              and .permissions.defaultMode == "bypassPermissions"
              and .cleanupPeriodDays == $days' >/dev/null 2>&1; then
     tmp="${SETTINGS}.tmp.$$"
     if printf '%s' "${base}" \
-         | jq --argjson days "${HISTORY_DAYS}" \
-             '.remoteControlAtStartup = true
+         | jq --argjson days "${HISTORY_DAYS}" --argjson remote "${REMOTE_CONTROL}" \
+             '.remoteControlAtStartup = $remote
               | .daemonColdStart = "transient"
               | .permissions.defaultMode = "bypassPermissions"
               | .cleanupPeriodDays = $days' > "${tmp}" 2>/dev/null; then
       mv -f "${tmp}" "${SETTINGS}" \
-        && echo "[sandbox] asserted sandbox defaults (Remote Control at startup, permissions bypassed, ${HISTORY_DAYS}-day history)"
+        && echo "[sandbox] asserted sandbox defaults (Remote Control at startup: ${REMOTE_CONTROL}, permissions bypassed, ${HISTORY_DAYS}-day history)"
     else
       rm -f "${tmp}"
       echo "[sandbox] WARN: could not update ${SETTINGS} with the sandbox defaults" >&2

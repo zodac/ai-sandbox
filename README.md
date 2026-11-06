@@ -64,6 +64,7 @@ ai-sandbox/sandbox.sh stop             # stop & remove a running sandbox
 ai-sandbox/sandbox.sh prune            # reclaim disk in the nested docker (see Persistence)
 ai-sandbox/sandbox.sh init             # scaffold ai-sandbox-configuration/ and .run/
 ai-sandbox/sandbox.sh update-versions  # bump the version pins in the base + project Dockerfiles
+ai-sandbox/sandbox.sh update-versions --project-only  # ... the project's alone, leaving the submodule clean
 ```
 
 `continue` and `resume` are shorthands for `run claude --dangerously-skip-permissions --continue` /
@@ -146,16 +147,19 @@ Start from [`templates/configuration/Dockerfile`](templates/configuration/Docker
 ## sandbox.conf
 
 Plain bash, sourced on the host before every launch; an environment variable of the same name
-overrides it (`SANDBOX_PORTS= ai-sandbox/sandbox.sh` publishes nothing, once).
+overrides it (`SANDBOX_PORTS= ai-sandbox/sandbox.sh` publishes nothing, once). A `SANDBOX_*` name the
+file sets that is not listed here gets a warning, since it would otherwise silently do nothing.
 
 | Setting                 | Default        | Meaning                                                                                       |
 | ----------------------- | -------------- | --------------------------------------------------------------------------------------------- |
 | `SANDBOX_PORTS`         | *(empty)*      | `host:container` pairs to publish                                                             |
 | `SANDBOX_CACHE_VOLUMES` | *(empty)*      | `name:/container/path` pairs, each a named volume `<sandbox-name>-<name>` that survives teardown |
-| `SANDBOX_NPM_DIRS`      | *(empty)*      | dirs (relative to the project, `.` = root) to `npm install` on open, when the lockfile changed |
-| `SANDBOX_ENV`           | *(empty)*      | extra `KEY=VALUE` environment (no spaces inside a value)                                      |
+| `SANDBOX_NPM_DIRS`      | *(empty)*      | dirs (relative to the project, `.` = root) to `npm ci` on open, when the lockfile changed; one with no `package.json` warns |
+| `SANDBOX_ENV`           | *(empty)*      | extra `KEY=VALUE` environment; a bash array for a value with spaces: `("KEY=a b")`            |
+| `SANDBOX_BUILD_ARGS`    | *(empty)*      | `KEY=VALUE` build args for the project's Dockerfile, in the same two forms: how it learns anything from outside its build context |
 | `SANDBOX_RUN_ARGS`      | *(empty)*      | extra `docker run` flags, passed through as-is                                                |
 | `SANDBOX_HISTORY_DAYS`  | `14`           | days of Claude session history (transcripts, file history, tool results) to keep; older is deleted at startup |
+| `SANDBOX_REMOTE_CONTROL` | `true`        | whether Claude starts its Remote Control bridge with each session                             |
 | `SANDBOX_NAME`          | derived        | pin the docker name prefix instead of deriving it from the checkout's path                    |
 | `SANDBOX_TZ`            | host's zone    | the sandbox's timezone (IANA name)                                                            |
 
@@ -168,14 +172,17 @@ At every start, as root, [`entrypoint.sh`](image/final/entrypoint.sh) starts the
 applies the host's timezone, hands the mount points to `dev`, and runs the project's
 `entrypoint.d/*.sh` (in name order; a failure is reported, not fatal). Then, as `dev`,
 [`launch.sh`](image/final/launch.sh) recovers Claude's login from its own snapshot if an abrupt
-teardown lost it, and re-asserts the sandbox's Claude settings (Remote Control at startup, permissions
+teardown lost it, and re-asserts the sandbox's Claude settings (`SANDBOX_REMOTE_CONTROL`, permissions
 bypassed, and the `SANDBOX_HISTORY_DAYS` transcript cleanup).
 
-Every **interactive** open (not `run <cmd>`) then runs [`setup.sh`](image/final/setup.sh), whose
-steps are guarded so a re-open is a fast no-op:
+Every open **from a terminal** then runs [`setup.sh`](image/final/setup.sh), whose steps are guarded so
+a re-open is a fast no-op. That includes `run <cmd>` in a terminal: only a launch with no TTY on stdin
+(a script, a pipe) skips it.
 
 1. `git submodule update --init`, if the project has an uninitialised submodule.
-2. `npm install` in each `SANDBOX_NPM_DIRS` dir that has a `package.json`, when its lockfile changed.
+2. `npm ci` (`npm install` where there is no lockfile) in each `SANDBOX_NPM_DIRS` dir, when its lockfile
+   changed. `ci` because `install` trusts the hidden `node_modules/.package-lock.json`, so it can report
+   "up to date" over packages that do not match it.
 3. `.claude/hooks/tests/run-hook-tests.sh`, if the project has PreToolUse guards: they fail silently,
    so they are proven here, in the environment that will run them, before any work happens.
 4. The project's `setup.d/*.sh`, in name order, with `step`/`skip`/`warn`/`none` and `STATE_DIR` (for
@@ -232,7 +239,12 @@ cache in the host's `/etc/docker/daemon.json` (then restart Docker):
 `ai-sandbox/sandbox.sh update-versions` bumps every `FROM image:tag` (within its major) and every
 pinned package in a `BEGIN/END DEBIAN PACKAGES` block, in this repo's base Dockerfile **and** the
 project's. Then launch to prove the new pins install. The base's pins are this repo's to commit; a
-project's are the project's.
+project's are the project's, so a project consuming this repo as a submodule uses `--project-only`.
+
+The pins must keep moving, because Debian removes a superseded package version from its repositories and
+a dead pin fails the build on any host that does not already have the image.
+[`update_versions.yml`](.github/workflows/update_versions.yml) therefore bumps the base and the
+`java-maven` example on the 1st of each month, proves they build, and releases them.
 
 > If configuration ever moves from Dockerfiles to declarative package lists (apt/pip files), the
 > version tooling — this script and the projects' own — needs a new solution: it depends on the
@@ -244,7 +256,9 @@ Every push to `master` that changes more than documentation (Markdown files and 
 [`.github/workflows/publish.yml`](.github/workflows/publish.yml): it is tagged with the version in
 [`VERSION`](VERSION), gets a GitHub release with a changelog grouped by commit `[Category]`, and `VERSION`
 is bumped to the next patch. For a minor or major release, edit `VERSION` before pushing. Projects pin a
-**tag** of this repo as their submodule, and move to the newest one with their own update scripts.
+**tag** of this repo as their submodule, and move to the newest one with their own update scripts. The
+base and the `java-maven` example are built first, and a failed build stops the release; `android-gradle`
+is too large to build on a hosted runner.
 
 ## Notes
 

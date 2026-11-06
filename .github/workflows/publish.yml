@@ -24,7 +24,23 @@ permissions:
   actions: write
 
 jobs:
+  # A tag is what projects pin, so nothing is tagged until it is proven to build from nothing: a hosted
+  # runner has no cached layers, so a package version Debian has since removed fails here rather than on
+  # the first host to need the image. android-gradle is too large for a hosted runner.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+
+      - name: Build the base and the java-maven example
+        env:
+          PROJECT_DIR: ${{ github.workspace }}
+          SANDBOX_CONFIG_DIR: ${{ github.workspace }}/examples/java-maven
+        run: ./sandbox.sh build
+
   publish:
+    needs: build
     runs-on: ubuntu-latest
     env:
       changelog_content: ""

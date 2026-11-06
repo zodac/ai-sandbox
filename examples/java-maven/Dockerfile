@@ -21,16 +21,18 @@ FROM maven:3.10.0-eclipse-temurin-26 AS maven
 
 # ── Playwright Chromium's OS shared libs: the package LIST (libnspr4, libnss3, …) ─
 # Playwright's own `install-deps` resolves the correct set (the names drift across Debian releases) -
-# run on a copy of the shared base, so the list is exactly what the runtime stage is missing. Pinned to
-# the version in the project's tests/package-lock.json. The browser BINARY stays out of the image:
-# setup.d/20-playwright.sh downloads it into the `pw` cache volume on first open.
+# run on a copy of the shared base, so the list is exactly what the runtime stage is missing. sandbox.conf
+# passes the version in the project's tests/package.json as PLAYWRIGHT_VERSION; this default only applies
+# to a project with no tests yet. The browser BINARY stays out of the image: setup.d/20-playwright.sh
+# downloads it into the `pw` cache volume on first open.
 FROM ${BASE_IMAGE} AS playwright-deps
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG PLAYWRIGHT_VERSION=1.64.1
 # hadolint ignore=DL3008,DL3009
 RUN --mount=type=cache,id=playwright-apt-cache,target=/var/cache/apt,sharing=locked --mount=type=cache,id=playwright-npm,target=/root/.npm,sharing=locked \
     apt-get update \
     && apt-mark showmanual | sort > /tmp/before \
-    && npx --yes playwright@1.62.0 install-deps chromium \
+    && npx --yes "playwright@${PLAYWRIGHT_VERSION}" install-deps chromium \
     && apt-mark showmanual | sort | comm -13 /tmp/before - > /playwright-packages.txt \
     && test -s /playwright-packages.txt
 
@@ -61,7 +63,7 @@ ENV JAVA_HOME=/opt/java/openjdk \
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -yqq --no-install-recommends \
         fontconfig="2.15.0-2.3" \
-        imagemagick="8:7.1.1.43+dfsg1-1+deb13u12" \
+        imagemagick="8:7.1.1.43+dfsg1-1+deb13u14" \
         librsvg2-bin="2.60.0+dfsg-1+deb13u1" \
         optipng="0.7.8+ds-1+b1" \
         python3-fonttools="4.57.0-1+deb13u1"

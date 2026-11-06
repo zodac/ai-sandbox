@@ -14,6 +14,7 @@
 #   ai-sandbox/sandbox.sh prune            # reclaim disk in the nested docker (build cache, images, volumes)
 #   ai-sandbox/sandbox.sh init             # create ai-sandbox-configuration/ and the IntelliJ run configs
 #   ai-sandbox/sandbox.sh update-versions  # bump the version pins in the base + project Dockerfiles
+#                                          # (--project-only leaves the base, and so the submodule, alone)
 #
 # A launch REPLACES any sandbox of the SAME project checkout that is already running (they cannot
 # coexist — same name, same ports, same ~/.claude bind mount), stopping it only once the new image has
@@ -36,19 +37,47 @@ CONFIG_DIR="${SANDBOX_CONFIG_DIR:-${PROJECT_DIR}/ai-sandbox-configuration}"
 # `SANDBOX_PORTS= ai-sandbox/sandbox.sh` still works - hence saving the environment's values before
 # sourcing and putting them back after. Set-but-empty counts as set (an empty SANDBOX_PORTS means
 # "publish nothing", which must be able to override a file that publishes something).
-SETTINGS=(SANDBOX_NAME SANDBOX_PORTS SANDBOX_CACHE_VOLUMES SANDBOX_NPM_DIRS SANDBOX_ENV SANDBOX_RUN_ARGS SANDBOX_TZ
-          SANDBOX_HISTORY_DAYS)
+#
+# A SANDBOX_* name the file introduces that is not a setting is almost certainly a typo, which would
+# otherwise silently do nothing, so it warns. Names already in the environment are left out of that:
+# SANDBOX_CONFIG_DIR is one, and they are not the file's doing.
+SETTINGS=(SANDBOX_NAME SANDBOX_PORTS SANDBOX_CACHE_VOLUMES SANDBOX_NPM_DIRS SANDBOX_ENV SANDBOX_BUILD_ARGS
+          SANDBOX_RUN_ARGS SANDBOX_TZ SANDBOX_HISTORY_DAYS SANDBOX_REMOTE_CONTROL)
 declare -A FROM_ENV=()
 for setting in "${SETTINGS[@]}"; do
   if [[ -n "${!setting+set}" ]]; then FROM_ENV["${setting}"]="${!setting}"; fi
 done
+declare -A NAMES_BEFORE_CONF=()
+while IFS= read -r name; do NAMES_BEFORE_CONF["${name}"]=1; done < <(compgen -v SANDBOX_ || true)
 if [[ -f "${CONFIG_DIR}/sandbox.conf" ]]; then
   # shellcheck source=/dev/null # the project's own file
   source "${CONFIG_DIR}/sandbox.conf"
 fi
+while IFS= read -r name; do
+  if [[ -z "${NAMES_BEFORE_CONF[${name}]-}" && " ${SETTINGS[*]} " != *" ${name} "* ]]; then
+    echo "[sandbox] WARN: ${CONFIG_DIR}/sandbox.conf sets ${name}, which is not a sandbox setting" >&2
+  fi
+done < <(compgen -v SANDBOX_ || true)
 for setting in "${!FROM_ENV[@]}"; do
+  # unset first: the file may have made it an array, and printf -v would only replace element 0.
+  unset "${setting}"
   printf -v "${setting}" '%s' "${FROM_ENV[${setting}]}"
 done
+
+# A setting's words, into the named array. A string splits on spaces; a bash array (which the file may
+# use, being bash) is taken as it is, which is how a value comes to hold a space.
+# shellcheck disable=SC2034  # `words` is a nameref: assigning it fills the caller's array
+setting_words() {
+  local -n words="$1"
+  local setting="$2" declaration
+  declaration="$(declare -p "${setting}" 2>/dev/null || true)"
+  if [[ "${declaration}" == "declare -a"* ]]; then
+    local -n values="${setting}"
+    words=(${values[@]+"${values[@]}"})
+  else
+    read -ra words <<< "${!setting-}"
+  fi
+}
 
 # ── Names ─────────────────────────────────────────────────────────────────────
 # EVERY docker name below is DERIVED, never hardcoded - the container, the image, the hostname and the
@@ -98,12 +127,29 @@ for volume in ${CACHE_VOLUMES+"${CACHE_VOLUMES[@]}"}; do
   CACHE_PATHS+=("${volume#*:}")
 done
 
-# Extra environment for the sandbox, space-separated KEY=VALUE pairs (no spaces inside a value), and
-# extra `docker run` flags (e.g. "--device /dev/kvm"), passed through as-is.
-read -ra EXTRA_ENV <<< "${SANDBOX_ENV-}"
+# Extra environment for the sandbox, KEY=VALUE pairs (an array in sandbox.conf for a value with spaces),
+# and extra `docker run` flags (e.g. "--device /dev/kvm"), passed through as-is.
+EXTRA_ENV=()
+setting_words EXTRA_ENV SANDBOX_ENV
 ENV_ARGS=()
 for pair in ${EXTRA_ENV+"${EXTRA_ENV[@]}"}; do ENV_ARGS+=(-e "${pair}"); done
 read -ra RUN_ARGS <<< "${SANDBOX_RUN_ARGS-}"
+
+# Build args for the project's Dockerfile, KEY=VALUE pairs in the same form. Its build context stops at
+# the configuration directory, so this is how the image learns anything from the rest of the project:
+# sandbox.conf is bash, so it can read a version out of a lockfile. Not passed to the base or final
+# layers, which the project does not own.
+EXTRA_BUILD_ARGS=()
+setting_words EXTRA_BUILD_ARGS SANDBOX_BUILD_ARGS
+BUILD_ARGS=()
+for pair in ${EXTRA_BUILD_ARGS+"${EXTRA_BUILD_ARGS[@]}"}; do BUILD_ARGS+=(--build-arg "${pair}"); done
+
+# Whether Claude starts its Remote Control bridge with each session (launch.sh). On by default.
+SANDBOX_REMOTE_CONTROL="${SANDBOX_REMOTE_CONTROL:-true}"
+if [[ "${SANDBOX_REMOTE_CONTROL}" != "true" && "${SANDBOX_REMOTE_CONTROL}" != "false" ]]; then
+  echo "[sandbox] SANDBOX_REMOTE_CONTROL must be true or false, not '${SANDBOX_REMOTE_CONTROL}'" >&2
+  exit 1
+fi
 
 # How many days of Claude session history (transcripts and their file-history / tool-result side-cars)
 # to keep in .claude-history: launch.sh sets it as Claude's `cleanupPeriodDays`, and Claude deletes
@@ -223,6 +269,7 @@ build() {
     echo "[sandbox] building project image ${PROJECT_IMAGE}..." >&2
     docker build -t "${PROJECT_IMAGE}" \
       --build-arg BASE_IMAGE="${base}" \
+      ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} \
       "$(to_docker_path "${CONFIG_DIR}")"
     from="${PROJECT_IMAGE}"
   fi
@@ -448,6 +495,7 @@ run() {
     -e SANDBOX_CACHE_PATHS="${CACHE_PATHS[*]-}" \
     -e SANDBOX_NPM_DIRS="${SANDBOX_NPM_DIRS-}" \
     -e SANDBOX_HISTORY_DAYS="${SANDBOX_HISTORY_DAYS}" \
+    -e SANDBOX_REMOTE_CONTROL="${SANDBOX_REMOTE_CONTROL}" \
     ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
     -v "$(to_docker_path "${PROJECT_DIR}")":/work \
     -v "$(to_docker_path "${CONFIG_DIR}")":/opt/ai-sandbox/config \
@@ -539,9 +587,26 @@ init() {
   echo "[sandbox] ${created} file(s) created. Next: edit ${CONFIG_DIR#"${PROJECT_DIR}"/}/sandbox.conf (and its Dockerfile, if the project needs toolchains)."
 }
 
+# --project-only is for a project consuming this repo as a submodule: the base's pins belong to this repo
+# and arrive with its tags, and bumping them from a project dirties the submodule (which can then block
+# the project's own move to a newer tag). The project's Debian pins still resolve against the base's release.
 update_versions() {
-  local dockerfiles=("${HERE}/image/base/Dockerfile")
-  [[ -f "${CONFIG_DIR}/Dockerfile" ]] && dockerfiles+=("${CONFIG_DIR}/Dockerfile")
+  local dockerfiles=()
+  case "${1:-}" in
+    "") dockerfiles+=("${HERE}/image/base/Dockerfile") ;;
+    --project-only) ;;
+    *)
+      echo "[sandbox] update-versions: unknown option '$1' (the one option is --project-only)" >&2
+      exit 1
+      ;;
+  esac
+  if [[ -f "${CONFIG_DIR}/Dockerfile" ]]; then
+    dockerfiles+=("${CONFIG_DIR}/Dockerfile")
+  fi
+  if [[ "${#dockerfiles[@]}" -eq 0 ]]; then
+    echo "[sandbox] update-versions: ${CONFIG_DIR} has no Dockerfile" >&2
+    exit 1
+  fi
   "${HERE}/scripts/update-versions.sh" "${dockerfiles[@]}"
 }
 
@@ -551,7 +616,7 @@ case "${1:-}" in
   prune)    prune ;;
   attach)   shift; attach "$@" ;;
   init)     init ;;
-  update-versions) update_versions ;;
+  update-versions) shift; update_versions "$@" ;;
   shell)    shift; run bash ;;
   # The two ways back into an earlier Claude session. Equivalent to (and interchangeable with) the
   # long forms `run claude --dangerously-skip-permissions --continue|--resume`.
