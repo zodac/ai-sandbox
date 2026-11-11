@@ -553,7 +553,10 @@ stop() {
 # Scaffold a project: its configuration directory from templates/configuration/, and the IntelliJ run
 # configurations from templates/run/ into the project's .run/ (which IntelliJ loads on its own, no
 # plugin needed). Never overwrites an existing file, so it is safe to re-run after an update to pick
-# up a new template. The run configurations reference the launcher by a $PROJECT_DIR$-relative path
+# up a new template. The templates are named *.run.xml.template, not *.run.xml: IntelliJ loads every
+# *.run.xml in the project, so in a project using this repo as a submodule the unsubstituted templates
+# (@SANDBOX_DIR@ still in the script path) would shadow the generated configs of the same name.
+# The run configurations reference the launcher by a $PROJECT_DIR$-relative path
 # only - no host path - so they can be committed.
 init() {
   local rel src dest created=0
@@ -579,8 +582,8 @@ init() {
   while IFS= read -r src; do
     copy_template "${src}" "${CONFIG_DIR}/${src#"${HERE}/templates/configuration/"}"
   done < <(find "${HERE}/templates/configuration" -type f | LC_ALL=C sort)
-  for src in "${HERE}"/templates/run/*.run.xml; do
-    dest="${PROJECT_DIR}/.run/$(basename "${src}")"
+  for src in "${HERE}"/templates/run/*.run.xml.template; do
+    dest="${PROJECT_DIR}/.run/$(basename "${src}" .template)"
     copy_template "${src}" "${dest}"
   done
   ensure_config
