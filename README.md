@@ -243,8 +243,12 @@ project's are the project's, so a project consuming this repo as a submodule use
 
 The pins must keep moving, because Debian removes a superseded package version from its repositories and
 a dead pin fails the build on any host that does not already have the image.
-[`update_versions.yml`](.github/workflows/update_versions.yml) therefore bumps the base and the
-`java-maven` example on the 1st of each month, proves they build, and releases them.
+[`.github/scripts/update_dependency_versions.sh`](.github/scripts/update_dependency_versions.sh) bumps
+everything this repo pins - the base, both examples and the GitHub Actions - so run it whenever a clean
+build fails on a missing package version, then `./sandbox.sh build`. The
+[`monthly_version_update.yml`](.github/workflows/monthly_version_update.yml) workflow runs it on the 1st
+of each month (leaving out `android-gradle`, too large to prove on a hosted runner), proves the result
+builds, and pushes it to `master`, which releases it.
 
 > If configuration ever moves from Dockerfiles to declarative package lists (apt/pip files), the
 > version tooling — this script and the projects' own — needs a new solution: it depends on the

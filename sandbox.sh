@@ -610,7 +610,7 @@ update_versions() {
     echo "[sandbox] update-versions: ${CONFIG_DIR} has no Dockerfile" >&2
     exit 1
   fi
-  "${HERE}/scripts/update-versions.sh" "${dockerfiles[@]}"
+  "${HERE}/.github/scripts/update_dependency_versions.sh" --dockerfiles "${dockerfiles[@]}"
 }
 
 case "${1:-}" in

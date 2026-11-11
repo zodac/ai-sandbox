@@ -53,7 +53,7 @@ ARG EMULATOR_API=37.0
 # JDK 25 — self-contained under /opt/java/openjdk, portable onto glibc Debian. LTS: move to a newer
 # major only once the project is proven to build on it, and keep it on the same major as the Gradle
 # toolchain (gradle/gradle-daemon-jvm.properties), so a sandbox build never has to download a JDK.
-FROM eclipse-temurin:25.0.4.1_1-jdk AS jdk
+FROM eclipse-temurin:25.0.5_8-jdk AS jdk
 
 # ── Download stage: curl + unzip for the Android and ImageMagick stages ───────
 # Unpinned on purpose: nothing installed here reaches the runtime image, only what the stages below

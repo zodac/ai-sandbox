@@ -17,10 +17,13 @@ Origin: https://github.com/zodac/ai-sandbox. Repo map:
 - `templates/` - what `init` copies: `configuration/` and the IntelliJ `run/` configs.
 - `examples/android-gradle` (from DiceFive) and `examples/java-maven` (from Diurnal) - complete
   project configurations, both built and verified.
-- `scripts/update-versions.sh` - pin bumps for the base and project Dockerfiles.
 - `VERSION` + `.github/workflows/publish.yml` - every push to `master` is built, tagged X.Y.Z and released,
   then VERSION is bumped (same mechanism as code-quality-config). Consuming projects pin a tag, never a
-  branch. `.github/workflows/update_versions.yml` bumps the pins monthly: a dead Debian pin breaks a clean build.
+  branch. `.github/scripts/update_dependency_versions.sh` bumps every pin here (the Dockerfiles
+  and the GitHub Actions; `sandbox.sh update-versions` runs its `--dockerfiles` mode for a project);
+  `.github/workflows/monthly_version_update.yml` runs it
+  monthly (via the org's GitHub App token, so its push can touch workflows and triggers Publish): a dead Debian
+  pin breaks a clean build.
 
 The four `sandbox-*/` directories in the repo root are the per-project sandboxes this repo replaces -
 reference material only (git-ignored), to be deleted once everything has been migrated:

@@ -27,7 +27,7 @@
 # Debian base — Docker's own Debian APT repo is the portable path, so it stays a normal apt install.
 #
 # NOTE: every version below is pinned, and bumped by `ai-sandbox/sandbox.sh update-versions`
-# (scripts/update-versions.sh). That script relies on this file's shape: `FROM image:tag` lines and
+# (.github/scripts/update_dependency_versions.sh). That script relies on this file's shape: `FROM image:tag` lines and
 # the BEGIN/END DEBIAN PACKAGES markers around each pinned package list.
 #
 # ── LAYER ORDER ───────────────────────────────────────────────────────────────
@@ -229,7 +229,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,t
         sudo="1.9.16p2-3+deb13u2" \
         tzdata="2026f-0+deb13u1" \
         unzip="6.0-29+deb13u1" \
-        vim="2:9.1.1230-2+deb13u1"
+        vim="2:9.1.1230-2+deb13u2"
 # END DEBIAN PACKAGES
 
 # ── Node (copied from the node stage above) ───────────────────────────────────
