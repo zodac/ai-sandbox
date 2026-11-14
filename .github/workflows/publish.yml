@@ -24,6 +24,35 @@ permissions:
   actions: write
 
 jobs:
+  # A tag is what projects pin, so a release must pass every linter first: actionlint, ShellCheck, hadolint
+  # and markdownlint, each from the image pinned in its .github/scripts/lint_*.sh, with the rules from the
+  # code-quality-config submodule.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      # submodules: code-quality-config holds the linters' rules
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - name: Lint workflows
+        run: .github/scripts/lint_workflows.sh
+
+      # !cancelled(): one linter's findings must not hide the next one's
+      - name: Lint shell scripts
+        if: ${{ !cancelled() }}
+        run: .github/scripts/lint_shell_scripts.sh
+
+      - name: Lint Dockerfiles
+        if: ${{ !cancelled() }}
+        run: .github/scripts/lint_dockerfiles.sh
+
+      - name: Lint Markdown
+        if: ${{ !cancelled() }}
+        run: .github/scripts/lint_markdown.sh
+
   # A tag is what projects pin, so nothing is tagged until it is proven to build from nothing: a hosted
   # runner has no cached layers, so a package version Debian has since removed fails here rather than on
   # the first host to need the image. android-gradle is too large for a hosted runner.
@@ -40,7 +69,7 @@ jobs:
         run: ./sandbox.sh build
 
   publish:
-    needs: build
+    needs: [ lint, build ]
     runs-on: ubuntu-latest
     env:
       changelog_content: ""

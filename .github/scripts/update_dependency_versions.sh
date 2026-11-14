@@ -9,6 +9,9 @@
 #                   (examples/*/Dockerfile) and this repo's own sandbox's
 #                   (ai-sandbox-configuration/Dockerfile), as described below
 #                 - GitHub Actions in .github/workflows (latest stable release tag, best-effort)
+#                 - the linters' Docker images, pinned in .github/scripts/lint_*.sh (best-effort)
+#                 - the code-quality-config submodule (the linters' rules), to its highest X.Y.Z tag
+#                   (best-effort)
 #
 #               Given Dockerfiles (--dockerfiles) - only those. This is what consuming projects run, via
 #               `ai-sandbox/sandbox.sh update-versions` (the base's Dockerfile plus the project's own),
@@ -118,8 +121,11 @@ newest() {
 }
 
 update_images() {
-    local dockerfile="$1" image tag version suffix major latest
+    local dockerfile="$1" image tag version suffix major latest highest images
+    # `|| true`: a Dockerfile whose every FROM is `${BASE_IMAGE}` or a stage has no tagged image at all.
+    images=$(grep -oP '^FROM\s+\K[^\s:$]+:\S+' "${dockerfile}" | sort -u || true)
     while IFS=: read -r image tag; do
+        [[ -n "${image}" ]] || continue
         if ! version=$(grep -oE '^[0-9]+([._][0-9]+)*' <<< "${tag}"); then
             echo "  ${image}:${tag} - not a version tag, skipped"
             continue
@@ -129,13 +135,13 @@ update_images() {
         latest=$(list_tags "${image}" | grep -E "^${major}([._][0-9]+)*${suffix//./\\.}\$" | newest || true)
         if [[ -z "${latest}" ]]; then
             warn "${image}:${tag} - no matching tags found, skipped"
-        elif [[ "$(printf '%s\n%s\n' "${tag}" "${latest}" | newest)" == "${tag}" ]]; then
+        elif highest=$(printf '%s\n%s\n' "${tag}" "${latest}" | newest) && [[ "${highest}" == "${tag}" ]]; then
             echo "  ${image}:${tag} (up-to-date)"
         else
             echo "  ${image}: ${tag} → ${latest}"
             sed -i "s|^FROM ${image}:${tag//./\\.}\\b|FROM ${image}:${latest}|" "${dockerfile}"
         fi
-    done < <(grep -oP '^FROM\s+\K[^\s:$]+:\S+' "${dockerfile}" | sort -u)
+    done <<< "${images}"
 }
 
 # ── 2. Debian packages (BEGIN/END DEBIAN PACKAGES blocks) ─────────────────────
@@ -243,6 +249,101 @@ update_github_actions() {
     ok "GitHub Actions updated in .github/workflows"
 }
 
+# ── 4. Linter images (.github/scripts/lint_*.sh) ──────────────────────────────
+# Each linter's Docker image, pinned in its lint script (one place for the CI and a local run to share), moved
+# to the linter's latest stable GitHub release - markdownlint-cli2 publishes none, so its highest stable tag -
+# once that Docker Hub tag exists. actionlint's release vX.Y.Z is the image X.Y.Z; the others' images keep the v.
+# Best-effort, like the GitHub Actions: an image that cannot be resolved is warned and left unchanged.
+
+# update_lint_image <name> <lint script> <pin variable> <image> <GitHub repo> <image tag keeps the v: true|false>
+#                   [<versions from: releases|tags>]
+update_lint_image() {
+    local name="${1}" script="${REPO_ROOT}/${2}" variable="${3}" image="${4}" repo="${5}" keep_v="${6}"
+    local source="${7:-releases}" current tag="" latest highest
+
+    current=$(grep -oP "^${variable}=\"${image}:\\K[^\"]+" "${script}" || true)
+    if [[ -z "${current}" ]]; then
+        warn "No ${variable} pin in ${2}, skipping"
+        return 0
+    fi
+
+    if [[ "${source}" == "tags" ]]; then
+        tag=$(github_curl "https://api.github.com/repos/${repo}/tags?per_page=100" | jq -r '.[].name' \
+            | while IFS= read -r candidate; do is_prerelease "${candidate}" || printf '%s\n' "${candidate}"; done \
+            | sort -V | tail -1 || true)
+    else
+        tag=$(latest_stable_github_release "${repo}" || true)
+    fi
+    latest="${tag}"
+    [[ "${keep_v}" == "true" ]] || latest="${tag#v}"
+
+    if [[ -z "${latest}" ]]; then
+        warn "Could not fetch a stable ${name} version, skipping"
+        return 0
+    fi
+    highest=$(printf '%s\n%s\n' "${current}" "${latest}" | sort -V | tail -1)
+    if [[ "${latest}" == "${current}" || "${highest}" == "${current}" ]]; then
+        echo "  ${image}:${current} (up-to-date)"
+        return 0
+    fi
+    if ! list_tags "${image}" | grep -qxF "${latest}"; then
+        warn "${image}:${latest} is not on Docker Hub yet, skipping"
+        return 0
+    fi
+
+    echo "  ${image}: ${current} → ${latest}"
+    sed -i "s|^${variable}=\"${image}:[^\"]*\"|${variable}=\"${image}:${latest}\"|" "${script}"
+}
+
+update_lint_images() {
+    echo
+    echo "🔍 Updating the linters' Docker images..."
+    update_lint_image actionlint .github/scripts/lint_workflows.sh ACTIONLINT_IMAGE rhysd/actionlint rhysd/actionlint false
+    update_lint_image ShellCheck .github/scripts/lint_shell_scripts.sh SHELLCHECK_IMAGE koalaman/shellcheck koalaman/shellcheck true
+    update_lint_image hadolint .github/scripts/lint_dockerfiles.sh HADOLINT_IMAGE hadolint/hadolint hadolint/hadolint true
+    update_lint_image markdownlint-cli2 .github/scripts/lint_markdown.sh MARKDOWNLINT_IMAGE davidanson/markdownlint-cli2 \
+        DavidAnson/markdownlint-cli2 true tags
+}
+
+# ── 5. The code-quality-config submodule ──────────────────────────────────────
+# The linters' shared rules, pinned to a release tag of their repository and moved to the highest X.Y.Z tag -
+# always a tag, never a branch's newest commit. Only the new tag is fetched (not `--depth 1`, which would turn a
+# full clone of the submodule into a shallow one, its history cut at that tag); the monthly workflow lints the tree
+# against the new rules before it commits, and its `git add -A` stages the moved submodule.
+update_code_quality_config() {
+    local dir="${REPO_ROOT}/code-quality-config" url latest current current_commit latest_commit
+    echo
+    echo "🔍 Updating the code-quality-config submodule..."
+
+    if [[ ! -e "${dir}/.git" ]]; then
+        warn "code-quality-config is not checked out (git submodule update --init), skipping"
+        return 0
+    fi
+    url=$(git -C "${REPO_ROOT}" config -f .gitmodules --get submodule.code-quality-config.url)
+    # `^{}` lines are an annotated tag's commit; the sort keeps releases only, highest last.
+    latest=$(git ls-remote --tags --refs "${url}" | sed 's|.*refs/tags/||' \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+    if [[ -z "${latest}" ]]; then
+        warn "Could not list ${url}'s X.Y.Z tags, skipping"
+        return 0
+    fi
+
+    if ! git -C "${dir}" fetch --quiet origin "refs/tags/${latest}:refs/tags/${latest}"; then
+        warn "Could not fetch code-quality-config ${latest}, skipping"
+        return 0
+    fi
+    current_commit=$(git -C "${dir}" rev-parse HEAD)
+    latest_commit=$(git -C "${dir}" rev-parse "refs/tags/${latest}^{commit}")
+    if [[ "${current_commit}" == "${latest_commit}" ]]; then
+        echo "  code-quality-config ${latest} (up-to-date)"
+        return 0
+    fi
+    # The tag it was on, for the log (a commit between tags, should one ever be checked out by hand, by its hash).
+    current=$(git -C "${dir}" describe --tags --exact-match HEAD 2>/dev/null || echo "${current_commit:0:7}")
+    git -C "${dir}" -c advice.detachedHead=false checkout --quiet "refs/tags/${latest}"
+    echo "  code-quality-config: ${current} → ${latest}"
+}
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 dockerfiles=(
@@ -273,6 +374,9 @@ esac
 
 update_dockerfiles "${dockerfiles[@]}"
 update_github_actions || warn "GitHub Actions update failed, continuing..."
+update_lint_images || warn "Linter image update failed, continuing..."
+update_code_quality_config || warn "code-quality-config update failed, continuing..."
 
 echo
-echo "✅ Dependency version update complete - run './sandbox.sh build' to prove the new pins install."
+echo "✅ Dependency version update complete - run './sandbox.sh build' to prove the new pins install,"
+echo "   and the .github/scripts/lint_*.sh scripts to prove the tree passes the new linters and rules."

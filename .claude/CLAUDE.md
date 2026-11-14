@@ -12,7 +12,7 @@ Script run configuration pointing at `$PROJECT_DIR$/ai-sandbox/sandbox.sh`.
 Released as `1.0.0` (2026-10-29). **DiceFive is migrated** (its commit `3ac5e510`), and so is **Diurnal**
 (2026-11-06); Home Theatre and Spring Boot are not yet - the user will ask to continue later (see
 *Remaining migrations* below).
-Origin: https://github.com/zodac/ai-sandbox. Repo map:
+Origin: <https://github.com/zodac/ai-sandbox>. Repo map:
 
 - `sandbox.sh` - the host launcher (all commands; `init` scaffolds a project; `update` moves its submodule
   to the newest tag and exec's that version's `init`, so a release's migrations belong in `init`, idempotent).
@@ -33,10 +33,15 @@ Origin: https://github.com/zodac/ai-sandbox. Repo map:
   breaks this sandbox too - fix it from the host.
 - `examples/android-gradle` (from DiceFive) and `examples/java-maven` (from Diurnal) - complete
   project configurations, both built and verified.
+- `code-quality-config/` - a submodule (pinned to a tag, like in DiceFive/Diurnal) holding the shared lint
+  rules; `.github/scripts/lint_{workflows,shell_scripts,dockerfiles,markdown}.sh` (ported from DiceFive) run
+  each linter from an image pinned in the script; Publish's `lint` job runs all four before it tags (so a
+  docs-only push is never linted in CI). Run them before handing work back.
 - `VERSION` + `.github/workflows/publish.yml` - every push to `master` is built, tagged X.Y.Z and released,
   then VERSION is bumped (same mechanism as code-quality-config). Consuming projects pin a tag, never a
-  branch. `.github/scripts/update_dependency_versions.sh` bumps every pin here (the Dockerfiles
-  and the GitHub Actions; `sandbox.sh update-versions` runs its `--dockerfiles` mode for a project);
+  branch. `.github/scripts/update_dependency_versions.sh` bumps every pin here (the Dockerfiles,
+  the GitHub Actions, the lint images and code-quality-config; `sandbox.sh update-versions` runs its
+  `--dockerfiles` mode for a project);
   `.github/workflows/monthly_version_update.yml` runs it
   monthly (via the org's GitHub App token, so its push can touch workflows and triggers Publish): a dead Debian
   pin breaks a clean build.
@@ -52,7 +57,7 @@ reference material only (git-ignored), to be deleted once everything has been mi
 
 ## Layout in a consuming project
 
-```
+```text
 <project>/
 ├── ai-sandbox/                    ← this repo (submodule; never edited per project)
 └── ai-sandbox-configuration/      ← committed in the project (override with SANDBOX_CONFIG_DIR)
@@ -204,13 +209,13 @@ Both are on `master` and still have a `sandbox/` directory. Start from `examples
 - **Never stop, replace or kill another project's sandbox.** The user may have a live Claude session
   in it, and a launch of the same checkout replaces it without asking (this happened to Tracker Profiles
   on 2026-11-14 - see the `update` gotcha above). So, in any project other than a scratch one you made:
-  - Run only the commands that never launch or stop: `init`, `build`, `update-versions`, and `update` once
-    `git -C <project>/ai-sandbox describe --tags` shows 1.1.0 or newer. Anything else - no command,
-    `continue`, `resume`, `shell`, `run`, `attach`, `stop`, `prune`, or a command the submodule's
-    version doesn't have (`sandbox.sh` launches with an unknown word as the command) - needs the user's
-    explicit go-ahead for that project, after you've said what it will do.
-  - Before any `sandbox.sh` call there, check `docker ps --format '{{.Names}}' | grep sandbox`; if the
-    project's sandbox is running, say so before going further.
-  - Never `docker stop`/`kill`/`rm` a `*-sandbox` container, or delete its volumes, unless you created it.
-  - Test launches belong in a scratch project in the scratchpad (`PROJECT_DIR=<scratch>`), whose
-    container and volumes you clean up afterwards.
+    - Run only the commands that never launch or stop: `init`, `build`, `update-versions`, and `update` once
+      `git -C <project>/ai-sandbox describe --tags` shows 1.1.0 or newer. Anything else - no command,
+      `continue`, `resume`, `shell`, `run`, `attach`, `stop`, `prune`, or a command the submodule's
+      version doesn't have (`sandbox.sh` launches with an unknown word as the command) - needs the user's
+      explicit go-ahead for that project, after you've said what it will do.
+    - Before any `sandbox.sh` call there, check `docker ps --format '{{.Names}}' | grep sandbox`; if the
+      project's sandbox is running, say so before going further.
+    - Never `docker stop`/`kill`/`rm` a `*-sandbox` container, or delete its volumes, unless you created it.
+    - Test launches belong in a scratch project in the scratchpad (`PROJECT_DIR=<scratch>`), whose
+      container and volumes you clean up afterwards.

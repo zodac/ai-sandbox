@@ -5,7 +5,7 @@ any other agent) against a project, isolated from the host machine. A project in
 **git submodule**, describes what it needs in a directory of its own beside it, and launches it from
 IntelliJ with a plain Shell Script run configuration.
 
-```
+```text
 <project>/
 ├── ai-sandbox/                    ← this repo, as a git submodule (never edited per project)
 ├── ai-sandbox-configuration/      ← the project's sandbox settings (committed)
@@ -35,20 +35,20 @@ and sets `"attribution": false` and the organisation's hook guards in `.claude/s
 Then edit `ai-sandbox-configuration/sandbox.conf` (and its `Dockerfile` if the project needs a JDK,
 Maven, an Android SDK, ...). [`examples/`](examples) has complete configurations to start from:
 
-| Example                                      | Taken from | Adds                                                                            |
-| -------------------------------------------- | ---------- | ------------------------------------------------------------------------------- |
+| Example                                      | Taken from | Adds                                                                                     |
+| -------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------- |
 | [`android-gradle`](examples/android-gradle)  | DiceFive   | JDK 25, Android SDK/NDK/emulator (`emulator.sh`), ImageMagick 7, ffmpeg, Playwright libs |
-| [`java-maven`](examples/java-maven)          | Diurnal    | JDK 26, Maven, Playwright libs + browser, ImageMagick/librsvg/optipng, port 8071 |
+| [`java-maven`](examples/java-maven)          | Diurnal    | JDK 26, Maven, Playwright libs + browser, ImageMagick/librsvg/optipng, port 8071         |
 
 In IntelliJ, the run configurations appear on their own (`.run/` is loaded without any plugin):
 
-| Run configuration                | Does                                                                   |
-| -------------------------------- | ---------------------------------------------------------------------- |
-| `Claude Sandbox`                 | a fresh interactive Claude session                                     |
-| `Claude Sandbox (Continue Last)` | `claude --continue`: the most recent session                           |
-| `Claude Sandbox (Resume Any)`    | `claude --resume`: pick a previous session from a list                 |
-| `Claude Sandbox (Shell)`         | a bash shell instead of Claude                                         |
-| `Claude Sandbox (Attach Shell)`  | a second shell in the sandbox that is already running                  |
+| Run configuration                | Does                                                                     |
+| -------------------------------- | ------------------------------------------------------------------------ |
+| `Claude Sandbox`                 | a fresh interactive Claude session                                       |
+| `Claude Sandbox (Continue Last)` | `claude --continue`: the most recent session                             |
+| `Claude Sandbox (Resume Any)`    | `claude --resume`: pick a previous session from a list                   |
+| `Claude Sandbox (Shell)`         | a bash shell instead of Claude                                           |
+| `Claude Sandbox (Attach Shell)`  | a second shell in the sandbox that is already running                    |
 | `Claude Sandbox (Stop)`          | stop and remove the running sandbox (the closest thing to a Stop button) |
 
 They reference the launcher only as `$PROJECT_DIR$/ai-sandbox/sandbox.sh`, so they hold no host path
@@ -184,18 +184,18 @@ Plain bash, sourced on the host before every launch; an environment variable of 
 overrides it (`SANDBOX_PORTS= ai-sandbox/sandbox.sh` publishes nothing, once). A `SANDBOX_*` name the
 file sets that is not listed here gets a warning, since it would otherwise silently do nothing.
 
-| Setting                 | Default        | Meaning                                                                                       |
-| ----------------------- | -------------- | --------------------------------------------------------------------------------------------- |
-| `SANDBOX_PORTS`         | *(empty)*      | `host:container` pairs to publish                                                             |
-| `SANDBOX_CACHE_VOLUMES` | *(empty)*      | `name:/container/path` pairs, each a named volume `<sandbox-name>-<name>` that survives teardown |
-| `SANDBOX_NPM_DIRS`      | *(empty)*      | dirs (relative to the project, `.` = root) to `npm ci` on open, when the lockfile changed; one with no `package.json` warns |
-| `SANDBOX_ENV`           | *(empty)*      | extra `KEY=VALUE` environment; a bash array for a value with spaces: `("KEY=a b")`            |
-| `SANDBOX_BUILD_ARGS`    | *(empty)*      | `KEY=VALUE` build args for the project's Dockerfile, in the same two forms: how it learns anything from outside its build context |
-| `SANDBOX_RUN_ARGS`      | *(empty)*      | extra `docker run` flags, passed through as-is                                                |
-| `SANDBOX_HISTORY_DAYS`  | `14`           | days of Claude session history (transcripts, file history, tool results) to keep; older is deleted at startup |
-| `SANDBOX_REMOTE_CONTROL` | `true`        | whether Claude starts its Remote Control bridge with each session                             |
-| `SANDBOX_NAME`          | derived        | pin the docker name prefix instead of deriving it from the checkout's path                    |
-| `SANDBOX_TZ`            | host's zone    | the sandbox's timezone (IANA name)                                                            |
+| Setting                  | Default        | Meaning                                                                                                                           |
+| ------------------------ | -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `SANDBOX_PORTS`          | *(empty)*      | `host:container` pairs to publish                                                                                                 |
+| `SANDBOX_CACHE_VOLUMES`  | *(empty)*      | `name:/container/path` pairs, each a named volume `<sandbox-name>-<name>` that survives teardown                                  |
+| `SANDBOX_NPM_DIRS`       | *(empty)*      | dirs (relative to the project, `.` = root) to `npm ci` on open, when the lockfile changed; one with no `package.json` warns       |
+| `SANDBOX_ENV`            | *(empty)*      | extra `KEY=VALUE` environment; a bash array for a value with spaces: `("KEY=a b")`                                                |
+| `SANDBOX_BUILD_ARGS`     | *(empty)*      | `KEY=VALUE` build args for the project's Dockerfile, in the same two forms: how it learns anything from outside its build context |
+| `SANDBOX_RUN_ARGS`       | *(empty)*      | extra `docker run` flags, passed through as-is                                                                                    |
+| `SANDBOX_HISTORY_DAYS`   | `14`           | days of Claude session history (transcripts, file history, tool results) to keep; older is deleted at startup                     |
+| `SANDBOX_REMOTE_CONTROL` | `true`         | whether Claude starts its Remote Control bridge with each session                                                                 |
+| `SANDBOX_NAME`           | derived        | pin the docker name prefix instead of deriving it from the checkout's path                                                        |
+| `SANDBOX_TZ`             | host's zone    | the sandbox's timezone (IANA name)                                                                                                |
 
 Two more are read from the environment only: `PROJECT_DIR` (default: the submodule's parent) and
 `SANDBOX_CONFIG_DIR` (default: `$PROJECT_DIR/ai-sandbox-configuration`).
@@ -248,11 +248,11 @@ than after IntelliJ has escalated to SIGKILL. `--rm` then removes the container,
 
 `<name>` is the derived sandbox name (`docker ps` shows it).
 
-| Mount                                       | Kind             | Holds                                                         |
-| ------------------------------------------- | ---------------- | ------------------------------------------------------------- |
+| Mount                                       | Kind             | Holds                                                                         |
+| ------------------------------------------- | ---------------- | ----------------------------------------------------------------------------- |
 | `ai-sandbox-configuration/.claude-history/` | bind-mounted dir | Claude auth, session transcripts, memory, onboarding state; the shell history |
-| `<name>-docker`                             | named volume     | the nested Docker's images/layers/build cache                 |
-| `<name>-<cache>`                            | named volume     | each `SANDBOX_CACHE_VOLUMES` entry (`~/.m2`, `~/.gradle`, ...) |
+| `<name>-docker`                             | named volume     | the nested Docker's images/layers/build cache                                 |
+| `<name>-<cache>`                            | named volume     | each `SANDBOX_CACHE_VOLUMES` entry (`~/.m2`, `~/.gradle`, ...)                |
 
 `.claude-history/` is a plain directory in the checkout (with a `*` `.gitignore` of its own, so no
 project `.gitignore` needs to know about it): inspect it with `ls`, back it up with `cp -r`, wipe it
@@ -288,11 +288,12 @@ against the base's Debian release - so there is no need to re-implement that map
 The pins must keep moving, because Debian removes a superseded package version from its repositories and
 a dead pin fails the build on any host that does not already have the image.
 [`.github/scripts/update_dependency_versions.sh`](.github/scripts/update_dependency_versions.sh) bumps
-everything this repo pins - the base, both examples and the GitHub Actions - so run it whenever a clean
-build fails on a missing package version, then `./sandbox.sh build`. The
+everything this repo pins - the base, both examples, the GitHub Actions, the linters' images and the
+`code-quality-config` submodule (see [Linting](#linting)) - so run it whenever a clean build fails on a
+missing package version, then `./sandbox.sh build`. The
 [`monthly_version_update.yml`](.github/workflows/monthly_version_update.yml) workflow runs it on the 1st
 of each month (leaving out `android-gradle`, too large to prove on a hosted runner), proves the result
-builds, and pushes it to `master`, which releases it.
+builds and still lints, and pushes it to `master`, which releases it.
 
 > If configuration ever moves from Dockerfiles to declarative package lists (apt/pip files), the
 > version tooling — this script and the projects' own — needs a new solution: it depends on the
@@ -325,6 +326,21 @@ configurations (launching `$PROJECT_DIR$/sandbox.sh`) and its `.claude/` files a
 isn't needed here and refuses to run. Edits to `image/` or `sandbox.sh` take effect at the next launch:
 if one breaks the sandbox, fix it from the host.
 
+## Linting
+
+The workflows, shell scripts, Dockerfiles and Markdown are linted by
+[`.github/scripts/lint_workflows.sh`](.github/scripts/lint_workflows.sh) (actionlint),
+[`lint_shell_scripts.sh`](.github/scripts/lint_shell_scripts.sh) (ShellCheck),
+[`lint_dockerfiles.sh`](.github/scripts/lint_dockerfiles.sh) (hadolint) and
+[`lint_markdown.sh`](.github/scripts/lint_markdown.sh) (markdownlint), run from the repository root. Each
+runs its linter from a Docker image pinned in the script, with the rules every project shares from the
+[`code-quality-config`](https://github.com/zodac/code-quality-config) submodule (pinned to a release tag):
+after cloning, run `git submodule update --init`. The submodule is for this repo's own linting only - a
+project consuming ai-sandbox has no use for it, and doesn't get it unless it clones `--recursive`.
+
+The release workflow runs all four before it tags anything, so a documentation-only push (which isn't
+released) is not linted in CI: run `lint_markdown.sh` before pushing one.
+
 ## Releases
 
 Every push to `master` that changes more than documentation (Markdown files and `.claude/`) is released by
@@ -332,7 +348,8 @@ Every push to `master` that changes more than documentation (Markdown files and 
 [`VERSION`](VERSION), gets a GitHub release with a changelog grouped by commit `[Category]`, and `VERSION`
 is bumped to the next patch. For a minor or major release, edit `VERSION` before pushing. Projects pin a
 **tag** of this repo as their submodule, and move to the newest one with their own update scripts. The
-base and the `java-maven` example are built first, and a failed build stops the release; `android-gradle`
+base and the `java-maven` example are built and the tree is [linted](#linting) first, and a failure stops
+the release; `android-gradle`
 is too large to build on a hosted runner.
 
 ## Notes

@@ -41,14 +41,17 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # holds that same committed directory, but has a superproject (or, without git on the host, a .git
 # FILE rather than a directory).
 self_hosted() {
+  local superproject
   [[ -f "${HERE}/ai-sandbox-configuration/sandbox.conf" ]] || return 1
   if command -v git >/dev/null 2>&1 && git -C "${HERE}" rev-parse --git-dir >/dev/null 2>&1; then
-    [[ -z "$(git -C "${HERE}" rev-parse --show-superproject-working-tree 2>/dev/null)" ]]
+    superproject="$(git -C "${HERE}" rev-parse --show-superproject-working-tree 2>/dev/null)" || superproject=""
+    [[ -z "${superproject}" ]]
   else
     [[ -d "${HERE}/.git" ]]
   fi
 }
 SELF_HOSTED=0
+# shellcheck disable=SC2310  # a test: self_hosted's status is the answer, never a failure to exit on
 if [[ -z "${PROJECT_DIR:-}" ]] && self_hosted; then
   SELF_HOSTED=1
   PROJECT_DIR="${HERE}"
@@ -277,7 +280,7 @@ base_image() {
 }
 
 build() {
-  local uid gid base from claude_arg=() baked
+  local uid gid base from claude_arg=() baked context
   uid="$(id -u)"
   gid="$(id -g)"
   base="$(base_image)"
@@ -287,10 +290,11 @@ build() {
     echo "[sandbox] base image ${base} is up to date" >&2
   else
     echo "[sandbox] building base image ${base}..." >&2
+    context="$(to_docker_path "${HERE}/image/base")"
     docker build -t "${base}" \
       --build-arg UID="${uid}" \
       --build-arg GID="${gid}" \
-      "$(to_docker_path "${HERE}/image/base")"
+      "${context}"
   fi
 
   # 2. The project's toolchains, if it has a Dockerfile. Its build context is the configuration
@@ -299,10 +303,11 @@ build() {
   from="${base}"
   if [[ -f "${CONFIG_DIR}/Dockerfile" ]]; then
     echo "[sandbox] building project image ${PROJECT_IMAGE}..." >&2
+    context="$(to_docker_path "${CONFIG_DIR}")"
     docker build -t "${PROJECT_IMAGE}" \
       --build-arg BASE_IMAGE="${base}" \
       ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} \
-      "$(to_docker_path "${CONFIG_DIR}")"
+      "${context}"
     from="${PROJECT_IMAGE}"
   fi
 
@@ -320,12 +325,13 @@ build() {
       echo "[sandbox] WARN: could not reach the npm registry, and the image records no Claude Code version" >&2
     fi
   fi
+  context="$(to_docker_path "${HERE}/image/final")"
   docker build -t "${IMAGE}" \
     --build-arg PROJECT_IMAGE="${from}" \
     --build-arg UID="${uid}" \
     --build-arg GID="${gid}" \
     ${claude_arg[@]+"${claude_arg[@]}"} \
-    "$(to_docker_path "${HERE}/image/final")"
+    "${context}"
 }
 
 # The files every launch needs in the configuration directory, created when missing:
@@ -376,6 +382,8 @@ export_git_config() {
       # Host paths, and include directives whose content --includes has already inlined. The excludes
       # file is copied separately below.
       include.*|includeif.*|safe.*|core.hookspath|core.excludesfile|core.attributesfile|init.templatedir) continue ;;
+      # Everything else is plain behaviour (aliases, diff/merge styles, user.name, ...), copied as it is.
+      *) ;;
     esac
     git config --file "${state}/host-gitconfig" --add -- "${key}" "${value}" \
       || echo "[sandbox] WARN: could not copy the git setting ${key} to the sandbox" >&2
@@ -518,6 +526,10 @@ run() {
   #   - the project's cache volumes (SANDBOX_CACHE_VOLUMES).
   # Claude derives its per-project history key from the working directory, /work, which is the same in
   # every sandbox - so `continue`/`resume` find the transcripts of earlier launches.
+  local project_mount config_mount history_mount
+  project_mount="$(to_docker_path "${PROJECT_DIR}")"
+  config_mount="$(to_docker_path "${CONFIG_DIR}")"
+  history_mount="$(to_docker_path "${CLAUDE_HISTORY_DIR}")"
   docker run "${tty[@]}" --rm \
     --name "${CONTAINER}" \
     --cidfile "${CIDFILE}" \
@@ -530,10 +542,10 @@ run() {
     -e SANDBOX_REMOTE_CONTROL="${SANDBOX_REMOTE_CONTROL}" \
     -e SANDBOX_REPO_DIR="${REPO_DIR}" \
     ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
-    -v "$(to_docker_path "${PROJECT_DIR}")":/work \
-    -v "$(to_docker_path "${CONFIG_DIR}")":/opt/ai-sandbox/config \
+    -v "${project_mount}":/work \
+    -v "${config_mount}":/opt/ai-sandbox/config \
     -v "${NAME}-docker":/var/lib/docker \
-    -v "$(to_docker_path "${CLAUDE_HISTORY_DIR}")":/home/dev/.claude \
+    -v "${history_mount}":/home/dev/.claude \
     ${CACHE_MOUNTS[@]+"${CACHE_MOUNTS[@]}"} \
     ${PUBLISH[@]+"${PUBLISH[@]}"} \
     ${RUN_ARGS[@]+"${RUN_ARGS[@]}"} \
@@ -694,7 +706,7 @@ ensure_claude_settings() {  # <submodule path relative to the project>
 # The run configurations reference the launcher by a $PROJECT_DIR$-relative path
 # only - no host path - so they can be committed.
 init() {
-  local rel src dest created=0
+  local rel src dest created=0 templates
   if (( SELF_HOSTED == 1 )); then
     echo "[sandbox] init: not needed - this is ai-sandbox's own checkout, which is its own sandbox" >&2
     echo "[sandbox]       (its ai-sandbox-configuration/, .run/ and .claude/ are committed by hand)" >&2
@@ -719,9 +731,11 @@ init() {
   }
 
   echo "[sandbox] initialising $(basename "${PROJECT_DIR}")..."
+  templates="$(find "${HERE}/templates/configuration" -type f)"
+  templates="$(LC_ALL=C sort <<< "${templates}")"
   while IFS= read -r src; do
     copy_template "${src}" "${CONFIG_DIR}/${src#"${HERE}/templates/configuration/"}"
-  done < <(find "${HERE}/templates/configuration" -type f | LC_ALL=C sort)
+  done <<< "${templates}"
   for src in "${HERE}"/templates/run/*.run.xml.template; do
     dest="${PROJECT_DIR}/.run/$(basename "${src}" .template)"
     copy_template "${src}" "${dest}"
@@ -750,7 +764,9 @@ update() {
     exit 1
   fi
   # Local edits would block the checkout, or be carried silently onto the new tag.
-  if [[ -n "$(git -C "${HERE}" status --porcelain)" ]]; then
+  local changes
+  changes="$(git -C "${HERE}" status --porcelain)"
+  if [[ -n "${changes}" ]]; then
     echo "[sandbox] update: ${HERE#"${PROJECT_DIR}"/} has local changes - commit or discard them first" >&2
     exit 1
   fi
@@ -770,7 +786,10 @@ update() {
   fi
   current="$(git -C "${HERE}" describe --tags --exact-match 2>/dev/null || git -C "${HERE}" rev-parse --short HEAD)"
 
-  if [[ "$(git -C "${HERE}" rev-parse HEAD)" == "$(git -C "${HERE}" rev-parse "refs/tags/${target}^{commit}")" ]]; then
+  local head_commit target_commit
+  head_commit="$(git -C "${HERE}" rev-parse HEAD)"
+  target_commit="$(git -C "${HERE}" rev-parse "refs/tags/${target}^{commit}")"
+  if [[ "${head_commit}" == "${target_commit}" ]]; then
     echo "[sandbox] ai-sandbox is already on ${target} - re-applying its scaffolding"
   else
     git -C "${HERE}" -c advice.detachedHead=false checkout --quiet "refs/tags/${target}"

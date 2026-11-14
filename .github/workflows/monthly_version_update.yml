@@ -2,8 +2,8 @@ name: Monthly Dependency Update
 
 # Debian removes a superseded package version from its repositories, so a pin that nothing moves stops
 # installing, and every host without the base image already built then fails its first launch (and so does
-# the Publish workflow's clean build). This bumps the pins - and the GitHub Actions - monthly, proves the
-# images build, and pushes to master, which releases them through the Publish workflow. It runs the day
+# the Publish workflow's clean build). This bumps the pins - and the GitHub Actions, the linters' images and the
+# code-quality-config submodule's rules - monthly, proves the images build and the tree still lints, and pushes to master, which releases them through the Publish workflow. It runs the day
 # before the consuming projects' own monthly updates (the 2nd), so those pick up the new tag.
 
 on:
@@ -30,10 +30,12 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
+      # submodules: code-quality-config, the linters' rules, which the update moves to its newest tag
       - name: Checkout code
         uses: actions/checkout@v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
+          submodules: true
 
       - name: Configure git user
         run: |
@@ -62,6 +64,16 @@ jobs:
           PROJECT_DIR: ${{ github.workspace }}
           SANDBOX_CONFIG_DIR: ${{ github.workspace }}/examples/java-maven
         run: ./sandbox.sh build
+
+      # New linter versions and new rules can both find something the old ones did not: fail here, before
+      # the commit, rather than in the Publish workflow after the push.
+      - name: Lint with the new linters and rules
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          .github/scripts/lint_workflows.sh
+          .github/scripts/lint_shell_scripts.sh
+          .github/scripts/lint_dockerfiles.sh
+          .github/scripts/lint_markdown.sh
 
       - name: Commit changes
         if: steps.changes.outputs.changed == 'true'
