@@ -16,6 +16,8 @@ IntelliJ with a plain Shell Script run configuration.
 │   ├── bin/                       ← optional: helper scripts, on the sandbox's PATH
 │   ├── .dockerignore              ← keeps .claude-history out of the image build
 │   └── .claude-history/           ← Claude's ~/.claude (auth, transcripts, memory) - ignores itself
+├── .claude/settings.json          ← gets "attribution": false from init (committed)
+├── CLAUDE.md or .claude/CLAUDE.md ← the project's rules; init adds the import of the organisation rules
 └── .run/*.run.xml                 ← the IntelliJ run configurations (committed)
 ```
 
@@ -26,6 +28,9 @@ cd <project>
 git submodule add https://github.com/zodac/ai-sandbox.git ai-sandbox
 ai-sandbox/sandbox.sh init      # creates ai-sandbox-configuration/ (with empty bin/, entrypoint.d/, setup.d/) and .run/ - never overwrites
 ```
+
+`init` also imports the [organisation rules](#organisation-rules-claudemd) into the project's `CLAUDE.md`
+and sets `"attribution": false` in `.claude/settings.json`.
 
 Then edit `ai-sandbox-configuration/sandbox.conf` (and its `Dockerfile` if the project needs a JDK,
 Maven, an Android SDK, ...). [`examples/`](examples) has complete configurations to start from:
@@ -50,6 +55,26 @@ They reference the launcher only as `$PROJECT_DIR$/ai-sandbox/sandbox.sh`, so th
 and are safe to commit. All but `Stop` have **Execute in the terminal** ticked: Claude's TUI needs a
 real PTY, and without one `sandbox.sh` falls back to non-interactive mode.
 
+## Organisation rules (CLAUDE.md)
+
+[`rules/CLAUDE.md`](rules/CLAUDE.md) holds the rules every ai-sandbox project shares. A project doesn't
+copy them: its own `CLAUDE.md` imports the file, so moving the submodule to a newer tag updates the rules
+too. The project's own rules stay in its `CLAUDE.md`, under the import. `init` adds the import line, and
+re-running it is safe:
+
+| Project file                            | Import line                       |
+| --------------------------------------- | --------------------------------- |
+| `CLAUDE.md` (used if it exists)         | `@ai-sandbox/rules/CLAUDE.md`     |
+| `.claude/CLAUDE.md` (created if needed) | `@../ai-sandbox/rules/CLAUDE.md`  |
+
+An import path is relative to the file that contains it, hence the `../`. Claude ignores an import it
+can't resolve without any warning, so check with `/memory` that `rules/CLAUDE.md` is listed. The rules
+also apply when Claude runs on the host, not just in the sandbox.
+
+`init` also sets `"attribution": false` in the project's `.claude/settings.json` (merged with `jq` when
+the host has it), which drops Claude's commit trailers and PR footer. Releases of Claude Code older
+than the boolean form reject it; they accept `{"commit": "", "pr": ""}` instead.
+
 ## Commands
 
 ```bash
@@ -63,6 +88,7 @@ ai-sandbox/sandbox.sh build            # (re)build the image; a launch does this
 ai-sandbox/sandbox.sh stop             # stop & remove a running sandbox
 ai-sandbox/sandbox.sh prune            # reclaim disk in the nested docker (see Persistence)
 ai-sandbox/sandbox.sh init             # scaffold ai-sandbox-configuration/ and .run/
+ai-sandbox/sandbox.sh update [X.Y.Z]   # upgrade: submodule -> newest (or given) tag, then its init
 ai-sandbox/sandbox.sh update-versions  # bump the version pins in the base + project Dockerfiles
 ai-sandbox/sandbox.sh update-versions --project-only  # ... the project's alone, leaving the submodule clean
 ```
@@ -253,6 +279,33 @@ builds, and pushes it to `master`, which releases it.
 > If configuration ever moves from Dockerfiles to declarative package lists (apt/pip files), the
 > version tooling — this script and the projects' own — needs a new solution: it depends on the
 > Dockerfile shape above.
+
+## Upgrading a project
+
+```bash
+ai-sandbox/sandbox.sh update          # or: update 1.2.3
+```
+
+This moves the submodule to the newest `X.Y.Z` release tag (or the one given), then runs **that**
+version's `init`. That's where a release puts its migrations: new templates, the organisation rules
+import, project settings. `init` never overwrites anything, so running `update` again does no harm. It
+refuses if the submodule has local changes, and it doesn't commit: review and commit the moved submodule
+along with any files it created or updated. The next launch rebuilds the image.
+
+A project's own update script can still move the tag itself. If it does, run `ai-sandbox/sandbox.sh init`
+afterwards, which is the second half of `update`. `update` only exists from the release that added it, so
+the first move onto that release has to be done by hand:
+`git -C ai-sandbox fetch --tags && git -C ai-sandbox checkout <tag> && ai-sandbox/sandbox.sh init`.
+
+## Developing ai-sandbox in its own sandbox
+
+This repo is its own sandbox project. It runs its **working tree**, not a published tag: making the repo
+a submodule of itself would nest one copy per release under any consumer that clones `--recursive`.
+`sandbox.sh` spots this case (an `ai-sandbox-configuration/` of its own, and no superproject) and uses
+the repo itself as the project. Its configuration (a `Dockerfile` that adds `shellcheck`), its `.run/`
+configurations (launching `$PROJECT_DIR$/sandbox.sh`) and its `.claude/` files are committed, so `init`
+isn't needed here and refuses to run. Edits to `image/` or `sandbox.sh` take effect at the next launch:
+if one breaks the sandbox, fix it from the host.
 
 ## Releases
 

@@ -1,5 +1,7 @@
 # ai-sandbox
 
+@../rules/CLAUDE.md
+
 A reusable, disposable Docker sandbox for running AI agents (mostly Claude Code with
 `--dangerously-skip-permissions`) against a project, isolated from the host. A project consumes this
 repo as a **git submodule** and launches the sandbox from IntelliJ (no extra plugins) with a Shell
@@ -12,9 +14,21 @@ Released as `1.0.0` (2026-10-29). **DiceFive is migrated** (its commit `3ac5e510
 *Remaining migrations* below).
 Origin: https://github.com/zodac/ai-sandbox. Repo map:
 
-- `sandbox.sh` - the host launcher (all commands; `init` scaffolds a project).
+- `sandbox.sh` - the host launcher (all commands; `init` scaffolds a project; `update` moves its submodule
+  to the newest tag and exec's that version's `init`, so a release's migrations belong in `init`, idempotent).
 - `image/base/` - the shared base image; `image/final/` - Claude Code + entrypoint/launch/setup.
 - `templates/` - what `init` copies: `configuration/` and the IntelliJ `run/` configs.
+- `rules/CLAUDE.md` - the organisation rules every consuming project shares. `init` adds an import of it
+  to the project's `CLAUDE.md` (`@../ai-sandbox/...` from `.claude/CLAUDE.md`, because an import path is
+  relative to the file holding it, and an unresolved one is dropped silently). `init` also sets
+  `"attribution": false` in the project's `.claude/settings.json`. This repo imports its working-tree
+  copy (above) and has the same setting.
+- `ai-sandbox-configuration/`, `.run/` - this repo is **its own sandbox**, running its working tree
+  (`self_hosted` in `sandbox.sh`: a config dir of its own and no superproject → `PROJECT_DIR` is the repo).
+  Not a self-submodule: every tag would gitlink the previous one, nesting a copy per release under any
+  consumer that clones `--recursive`. `init` refuses here; its outputs are committed by hand (the `.run/`
+  files are the templates with `@SANDBOX_DIR@/` removed). A broken edit to `image/` or `sandbox.sh`
+  breaks this sandbox too - fix it from the host.
 - `examples/android-gradle` (from DiceFive) and `examples/java-maven` (from Diurnal) - complete
   project configurations, both built and verified.
 - `VERSION` + `.github/workflows/publish.yml` - every push to `master` is built, tagged X.Y.Z and released,
@@ -169,7 +183,7 @@ Both are on `master` and still have a `sandbox/` directory. Start from `examples
 ## Working rules
 
 - Don't commit unless asked.
-- Finished work goes on `master`, ready for review. A feature branch is fine for testing, but merge
-  it back into `master` (and delete it) before handing the work over - never leave it on a branch.
+- Work directly on `master` (organisation rule 1: never a feature branch); finished work stays there,
+  ready for review.
 - Keep the existing scripts' style: `set -euo pipefail`, heavily commented "why" explanations,
   `[sandbox]`/`[setup]` log prefixes, guarded/idempotent setup steps.

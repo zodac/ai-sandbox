@@ -13,6 +13,9 @@
 #   ai-sandbox/sandbox.sh stop             # stop & remove a running sandbox (one-click teardown)
 #   ai-sandbox/sandbox.sh prune            # reclaim disk in the nested docker (build cache, images, volumes)
 #   ai-sandbox/sandbox.sh init             # create ai-sandbox-configuration/ and the IntelliJ run configs
+#                                          # (+ the org rules import in CLAUDE.md, .claude/settings.json)
+#   ai-sandbox/sandbox.sh update [X.Y.Z]   # move this submodule to the newest (or given) release tag,
+#                                          # then run that version's init (its migrations)
 #   ai-sandbox/sandbox.sh update-versions  # bump the version pins in the base + project Dockerfiles
 #                                          # (--project-only leaves the base, and so the submodule, alone)
 #
@@ -29,6 +32,26 @@ set -euo pipefail
 
 # This script lives in <project>/<submodule>/, so the project root is its parent dir.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ...except in this repo's own checkout, which is its own sandbox: it is developed from a sandbox that
+# runs its WORKING TREE (not a published tag - a submodule of itself would nest one copy per release
+# under every consumer that clones with --recursive). It is recognised by having a configuration
+# directory of its own while NOT being a submodule. The second test matters: a consumer's submodule
+# holds that same committed directory, but has a superproject (or, without git on the host, a .git
+# FILE rather than a directory).
+self_hosted() {
+  [[ -f "${HERE}/ai-sandbox-configuration/sandbox.conf" ]] || return 1
+  if command -v git >/dev/null 2>&1 && git -C "${HERE}" rev-parse --git-dir >/dev/null 2>&1; then
+    [[ -z "$(git -C "${HERE}" rev-parse --show-superproject-working-tree 2>/dev/null)" ]]
+  else
+    [[ -d "${HERE}/.git" ]]
+  fi
+}
+SELF_HOSTED=0
+if [[ -z "${PROJECT_DIR:-}" ]] && self_hosted; then
+  SELF_HOSTED=1
+  PROJECT_DIR="${HERE}"
+fi
 PROJECT_DIR="${PROJECT_DIR:-$(dirname "${HERE}")}"
 CONFIG_DIR="${SANDBOX_CONFIG_DIR:-${PROJECT_DIR}/ai-sandbox-configuration}"
 
@@ -550,6 +573,85 @@ stop() {
   fi
 }
 
+# Import the organisation rules (rules/CLAUDE.md, shared by every ai-sandbox project) into the project's
+# own CLAUDE.md with an `@<submodule>/rules/CLAUDE.md` line. An import, not a copy, so moving the
+# submodule to a newer tag updates the rules with no re-init. Claude Code only loads CLAUDE.md files
+# from the working directory up, so a CLAUDE.md inside the submodule would never be read on its own.
+# The project's file is either CLAUDE.md or .claude/CLAUDE.md (Claude loads both): the import goes into
+# whichever exists (the root one if both do), and a new .claude/CLAUDE.md is created if neither does.
+# An import path is relative to the file holding it, so the one in .claude/CLAUDE.md needs `../` (without
+# it, Claude silently looks in .claude/<submodule>/ and loads nothing).
+# Idempotent: nothing changes if either file already has the import.
+ensure_claude_rules() {  # <submodule path relative to the project>
+  local rules="$1/rules/CLAUDE.md" import target tmp
+  if [[ -f "${PROJECT_DIR}/CLAUDE.md" ]] && grep -qxF "@${rules}" "${PROJECT_DIR}/CLAUDE.md"; then
+    echo "  exists   @${rules} in CLAUDE.md"
+    return 0
+  fi
+  if [[ -f "${PROJECT_DIR}/.claude/CLAUDE.md" ]] && grep -qxF "@../${rules}" "${PROJECT_DIR}/.claude/CLAUDE.md"; then
+    echo "  exists   @../${rules} in .claude/CLAUDE.md"
+    return 0
+  fi
+
+  if [[ -f "${PROJECT_DIR}/CLAUDE.md" ]]; then
+    target="${PROJECT_DIR}/CLAUDE.md"
+    import="@${rules}"
+  else
+    target="${PROJECT_DIR}/.claude/CLAUDE.md"
+    import="@../${rules}"
+  fi
+  if [[ ! -f "${target}" ]]; then
+    mkdir -p "$(dirname "${target}")"
+    printf '# %s\n\n%s\n' "$(basename "${PROJECT_DIR}")" "${import}" > "${target}"
+    echo "  created  ${target#"${PROJECT_DIR}"/} (importing the organisation rules)"
+    return 0
+  fi
+
+  # Under the file's title, if it opens with one (so the title stays first), else at the very top.
+  tmp="${target}.tmp.$$"
+  if head -n 1 "${target}" | grep -q '^# '; then
+    { head -n 1 "${target}"; printf '\n%s\n' "${import}"; tail -n +2 "${target}"; } > "${tmp}"
+  else
+    { printf '%s\n\n' "${import}"; cat "${target}"; } > "${tmp}"
+  fi
+  mv -f "${tmp}" "${target}"
+  echo "  updated  ${target#"${PROJECT_DIR}"/} (imports the organisation rules)"
+}
+
+# The project's shared Claude settings (.claude/settings.json, committed) that every ai-sandbox project
+# wants. These are project settings rather than ones launch.sh asserts in the sandbox's ~/.claude, so they
+# also apply when Claude runs on the host:
+#   • `attribution: false` - no Co-Authored-By trailer, session link or PR footer from Claude. The
+#     boolean form needs a recent Claude Code; older releases reject it and only accept
+#     { "commit": "", "pr": "" }.
+# Merged with jq when the host has it (a Git Bash host may not). Without jq, an existing file that does
+# not mention the setting gets a warning instead of a hand-rolled JSON edit.
+ensure_claude_settings() {
+  local settings="${PROJECT_DIR}/.claude/settings.json" rel_settings=".claude/settings.json" tmp
+  if [[ ! -f "${settings}" ]]; then
+    mkdir -p "$(dirname "${settings}")"
+    printf '{\n  "attribution": false\n}\n' > "${settings}"
+    echo "  created  ${rel_settings}"
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    grep -q '"attribution"[[:space:]]*:[[:space:]]*false' "${settings}" \
+      || echo "[sandbox] WARN: no jq to update ${rel_settings} - add \"attribution\": false to it by hand" >&2
+    return 0
+  fi
+  if ! jq -e . "${settings}" >/dev/null 2>&1; then
+    echo "[sandbox] WARN: ${rel_settings} is not valid JSON - add \"attribution\": false to it by hand" >&2
+    return 0
+  fi
+  if jq -e '.attribution == false' "${settings}" >/dev/null; then
+    echo "  exists   \"attribution\": false in ${rel_settings}"
+    return 0
+  fi
+  tmp="${settings}.tmp.$$"
+  jq --indent 2 '.attribution = false' "${settings}" > "${tmp}" && mv -f "${tmp}" "${settings}"
+  echo "  updated  ${rel_settings} (\"attribution\": false)"
+}
+
 # Scaffold a project: its configuration directory from templates/configuration/, and the IntelliJ run
 # configurations from templates/run/ into the project's .run/ (which IntelliJ loads on its own, no
 # plugin needed). Never overwrites an existing file, so it is safe to re-run after an update to pick
@@ -560,6 +662,11 @@ stop() {
 # only - no host path - so they can be committed.
 init() {
   local rel src dest created=0
+  if (( SELF_HOSTED == 1 )); then
+    echo "[sandbox] init: not needed - this is ai-sandbox's own checkout, which is its own sandbox" >&2
+    echo "[sandbox]       (its ai-sandbox-configuration/, .run/ and .claude/ are committed by hand)" >&2
+    exit 1
+  fi
   if [[ "${HERE}" != "${PROJECT_DIR}"/* ]]; then
     echo "[sandbox] init: ${HERE} is not inside ${PROJECT_DIR} - set PROJECT_DIR" >&2
     exit 1
@@ -587,7 +694,58 @@ init() {
     copy_template "${src}" "${dest}"
   done
   ensure_config
+  ensure_claude_rules "${rel}"
+  ensure_claude_settings
   echo "[sandbox] ${created} file(s) created. Next: edit ${CONFIG_DIR#"${PROJECT_DIR}"/}/sandbox.conf (and its Dockerfile, if the project needs toolchains)."
+}
+
+# Upgrade a project to a newer ai-sandbox: move the submodule to the newest X.Y.Z tag (or the one given),
+# then run that NEW version's init. Releases add their migrations to init (new templates, the rules import,
+# project settings), and init is idempotent and never overwrites, so "update" = "move + re-scaffold".
+# The new version's init has to be the one that runs, so this script exec's the freshly checked-out copy
+# of itself. That is also what makes moving it safe: git replaces sandbox.sh with a new file (the running
+# bash keeps reading the old one, now unlinked), and the exec comes before the old copy reads any further.
+# The result is left uncommitted: the submodule pointer plus whatever init created or updated.
+update() {
+  local target current
+  if (( SELF_HOSTED == 1 )); then
+    echo "[sandbox] update: this is ai-sandbox's own checkout, which runs its working tree - use git here" >&2
+    exit 1
+  fi
+  if ! command -v git >/dev/null 2>&1 || ! git -C "${HERE}" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "[sandbox] update: ${HERE} is not a git checkout (it should be a submodule of the project)" >&2
+    exit 1
+  fi
+  # Local edits would block the checkout, or be carried silently onto the new tag.
+  if [[ -n "$(git -C "${HERE}" status --porcelain)" ]]; then
+    echo "[sandbox] update: ${HERE#"${PROJECT_DIR}"/} has local changes - commit or discard them first" >&2
+    exit 1
+  fi
+
+  echo "[sandbox] fetching ai-sandbox tags..."
+  git -C "${HERE}" fetch --quiet --tags origin
+  if [[ -n "${1:-}" ]]; then
+    target="$1"
+    git -C "${HERE}" rev-parse --verify --quiet "refs/tags/${target}" >/dev/null || {
+      echo "[sandbox] update: no tag '${target}'" >&2
+      exit 1
+    }
+  else
+    # Releases only (X.Y.Z): git's own version sort, so no `sort -V` is needed on the host.
+    target="$(git -C "${HERE}" tag --list --sort=-v:refname '[0-9]*.[0-9]*.[0-9]*' | head -n 1)"
+    [[ -n "${target}" ]] || { echo "[sandbox] update: no X.Y.Z release tags found" >&2; exit 1; }
+  fi
+  current="$(git -C "${HERE}" describe --tags --exact-match 2>/dev/null || git -C "${HERE}" rev-parse --short HEAD)"
+
+  if [[ "$(git -C "${HERE}" rev-parse HEAD)" == "$(git -C "${HERE}" rev-parse "refs/tags/${target}^{commit}")" ]]; then
+    echo "[sandbox] ai-sandbox is already on ${target} - re-applying its scaffolding"
+  else
+    git -C "${HERE}" -c advice.detachedHead=false checkout --quiet "refs/tags/${target}"
+    echo "[sandbox] ai-sandbox ${current} -> ${target} - applying its scaffolding"
+  fi
+  echo "[sandbox] review and commit the result: the ${HERE#"${PROJECT_DIR}"/} submodule and any files below;"
+  echo "[sandbox] the next launch rebuilds the image."
+  exec "${HERE}/sandbox.sh" init
 }
 
 # --project-only is for a project consuming this repo as a submodule: the base's pins belong to this repo
@@ -619,6 +777,7 @@ case "${1:-}" in
   prune)    prune ;;
   attach)   shift; attach "$@" ;;
   init)     init ;;
+  update)   shift; update "$@" ;;
   update-versions) shift; update_versions "$@" ;;
   shell)    shift; run bash ;;
   # The two ways back into an earlier Claude session. Equivalent to (and interchangeable with) the

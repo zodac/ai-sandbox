@@ -6,7 +6,8 @@
 #
 #               This repository (no arguments) - every pin it owns:
 #                 - the base image's Dockerfile (image/base/Dockerfile), then the examples' Dockerfiles
-#                   (examples/*/Dockerfile), as described below
+#                   (examples/*/Dockerfile) and this repo's own sandbox's
+#                   (ai-sandbox-configuration/Dockerfile), as described below
 #                 - GitHub Actions in .github/workflows (latest stable release tag, best-effort)
 #
 #               Given Dockerfiles (--dockerfiles) - only those. This is what consuming projects run, via
@@ -243,6 +244,7 @@ dockerfiles=(
     "${BASE_DOCKERFILE}"
     "${REPO_ROOT}/examples/java-maven/Dockerfile"
     "${REPO_ROOT}/examples/android-gradle/Dockerfile"
+    "${REPO_ROOT}/ai-sandbox-configuration/Dockerfile"
 )
 case "${1:-}" in
     --dockerfiles)
