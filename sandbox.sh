@@ -703,13 +703,14 @@ ensure_claude_settings() {  # <submodule path relative to the project>
 # up a new template. The templates are named *.run.xml.template, not *.run.xml: IntelliJ loads every
 # *.run.xml in the project, so in a project using this repo as a submodule the unsubstituted templates
 # (@SANDBOX_DIR@ still in the script path) would shadow the generated configs of the same name.
+# For the same reason this repo's own configurations are in .idea/runConfigurations/, not .run/.
 # The run configurations reference the launcher by a $PROJECT_DIR$-relative path
 # only - no host path - so they can be committed.
 init() {
   local rel src dest created=0 templates
   if (( SELF_HOSTED == 1 )); then
     echo "[sandbox] init: not needed - this is ai-sandbox's own checkout, which is its own sandbox" >&2
-    echo "[sandbox]       (its ai-sandbox-configuration/, .run/ and .claude/ are committed by hand)" >&2
+    echo "[sandbox]       (its ai-sandbox-configuration/, .idea/runConfigurations/ and .claude/ are committed by hand)" >&2
     exit 1
   fi
   if [[ "${HERE}" != "${PROJECT_DIR}"/* ]]; then

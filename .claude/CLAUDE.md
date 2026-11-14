@@ -25,12 +25,13 @@ Origin: <https://github.com/zodac/ai-sandbox>. Repo map:
   `rules/hooks/` (today `guard-git-branch.sh`, rule 1) as `"$CLAUDE_PROJECT_DIR"/<submodule>/rules/hooks/...`
   PreToolUse hooks; `setup.sh` runs `rules/hooks/tests/` on every open and warns about an unregistered
   one. This repo imports its working-tree copy (above) and has the same settings.
-- `ai-sandbox-configuration/`, `.run/` - this repo is **its own sandbox**, running its working tree
-  (`self_hosted` in `sandbox.sh`: a config dir of its own and no superproject → `PROJECT_DIR` is the repo).
-  Not a self-submodule: every tag would gitlink the previous one, nesting a copy per release under any
-  consumer that clones `--recursive`. `init` refuses here; its outputs are committed by hand (the `.run/`
-  files are the templates with `@SANDBOX_DIR@/` removed). A broken edit to `image/` or `sandbox.sh`
-  breaks this sandbox too - fix it from the host.
+- `ai-sandbox-configuration/`, `.idea/runConfigurations/` - this repo is **its own sandbox**, running its
+  working tree (`self_hosted` in `sandbox.sh`: a config dir of its own and no superproject → `PROJECT_DIR`
+  is the repo). Not a self-submodule: every tag would gitlink the previous one, nesting a copy per release
+  under any consumer that clones `--recursive`. `init` refuses here; its outputs are committed by hand (the
+  run configurations are the templates with `@SANDBOX_DIR@/` removed, in `.idea/runConfigurations/` -
+  never `.run/`, see *Run configs* below). A broken edit to `image/` or `sandbox.sh` breaks this sandbox
+  too - fix it from the host.
 - `examples/android-gradle` (from DiceFive) and `examples/java-maven` (from Diurnal) - complete
   project configurations, both built and verified.
 - `code-quality-config/` - a submodule (pinned to a tag, like in DiceFive/Diurnal) holding the shared lint
@@ -103,7 +104,11 @@ reference material only (git-ignored), to be deleted once everything has been mi
   submodule. Committed files would hardcode the submodule's directory name. The templates are named
   `*.run.xml.template` on purpose: IntelliJ loads any `*.run.xml` in a consuming project, and the
   unsubstituted templates (`@SANDBOX_DIR@/sandbox.sh`) then shadowed the generated configs of the same
-  name, failing with "Shell script not found".
+  name, failing with "Shell script not found". The same goes for this repo's own configurations: from
+  1.1.0 to 1.2.1 they were in `.run/`, and every consumer's IntelliJ loaded them from the submodule, where
+  `$PROJECT_DIR$/sandbox.sh` doesn't exist ("Shell script not found" again). They are in
+  `.idea/runConfigurations/` now (the one `.idea/` path `.gitignore` lets through), which IntelliJ reads
+  only from the project's own root; Publish's lint job fails on any committed `*.run.xml`.
 - **Shell history** (interactive bash only) lives in `.claude-history/.sandbox-state/bash_history`,
   appended per command (`image/final/bashrc.sh`), because a closed IntelliJ tab kills `docker exec`
   without bash ever saving.

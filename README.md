@@ -321,9 +321,12 @@ the first move onto that release has to be done by hand:
 This repo is its own sandbox project. It runs its **working tree**, not a published tag: making the repo
 a submodule of itself would nest one copy per release under any consumer that clones `--recursive`.
 `sandbox.sh` spots this case (an `ai-sandbox-configuration/` of its own, and no superproject) and uses
-the repo itself as the project. Its configuration (a `Dockerfile` that adds `shellcheck`), its `.run/`
+the repo itself as the project. Its configuration (a `Dockerfile` that adds `shellcheck`), its run
 configurations (launching `$PROJECT_DIR$/sandbox.sh`) and its `.claude/` files are committed, so `init`
-isn't needed here and refuses to run. Edits to `image/` or `sandbox.sh` take effect at the next launch:
+isn't needed here and refuses to run. The run configurations are in `.idea/runConfigurations/`, not
+`.run/`: IntelliJ loads every `*.run.xml` in a project, a submodule's included, so a consuming project
+would get them too, and they would shadow its own configurations of the same name with a script path
+that doesn't exist there. Edits to `image/` or `sandbox.sh` take effect at the next launch:
 if one breaks the sandbox, fix it from the host.
 
 ## Linting

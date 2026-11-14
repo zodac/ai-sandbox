@@ -53,6 +53,19 @@ jobs:
         if: ${{ !cancelled() }}
         run: .github/scripts/lint_markdown.sh
 
+      # A consuming project's IntelliJ loads every *.run.xml it finds, the submodule's included: one
+      # shipped here (1.1.0-1.2.1 shipped this repo's own .run/) shadows the project's generated config
+      # of the same name with a script path that does not exist there ("Shell script not found"). This
+      # repo's own configurations live in .idea/runConfigurations/, which only its own checkout reads.
+      - name: No IntelliJ run configurations outside .idea/
+        if: ${{ !cancelled() }}
+        run: |
+          if found="$(git ls-files -- '*.run.xml' | grep .)"; then
+            echo "::error::*.run.xml files would load in every consuming project:"
+            echo "${found}"
+            exit 1
+          fi
+
   # A tag is what projects pin, so nothing is tagged until it is proven to build from nothing: a hosted
   # runner has no cached layers, so a package version Debian has since removed fails here rather than on
   # the first host to need the image. android-gradle is too large for a hosted runner.
