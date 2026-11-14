@@ -23,8 +23,8 @@ FROM maven:3.10.0-eclipse-temurin-26 AS maven
 # Playwright's own `install-deps` resolves the correct set (the names drift across Debian releases) -
 # run on a copy of the shared base, so the list is exactly what the runtime stage is missing. sandbox.conf
 # passes the version in the project's tests/package.json as PLAYWRIGHT_VERSION; this default only applies
-# to a project with no tests yet. The browser BINARY stays out of the image: setup.d/20-playwright.sh
-# downloads it into the `pw` cache volume on first open.
+# to a project with no tests yet. The browser BINARY stays out of the image: the sandbox's own setup
+# (ai-sandbox/image/final/setup.sh) downloads it into the `pw` cache volume on first open.
 FROM ${BASE_IMAGE} AS playwright-deps
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG PLAYWRIGHT_VERSION=1.64.1

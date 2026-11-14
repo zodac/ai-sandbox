@@ -21,8 +21,10 @@ Origin: https://github.com/zodac/ai-sandbox. Repo map:
 - `rules/CLAUDE.md` - the organisation rules every consuming project shares. `init` adds an import of it
   to the project's `CLAUDE.md` (`@../ai-sandbox/...` from `.claude/CLAUDE.md`, because an import path is
   relative to the file holding it, and an unresolved one is dropped silently). `init` also sets
-  `"attribution": false` in the project's `.claude/settings.json`. This repo imports its working-tree
-  copy (above) and has the same setting.
+  `"attribution": false` in the project's `.claude/settings.json` and registers the guards in
+  `rules/hooks/` (today `guard-git-branch.sh`, rule 1) as `"$CLAUDE_PROJECT_DIR"/<submodule>/rules/hooks/...`
+  PreToolUse hooks; `setup.sh` runs `rules/hooks/tests/` on every open and warns about an unregistered
+  one. This repo imports its working-tree copy (above) and has the same settings.
 - `ai-sandbox-configuration/`, `.run/` - this repo is **its own sandbox**, running its working tree
   (`self_hosted` in `sandbox.sh`: a config dir of its own and no superproject → `PROJECT_DIR` is the repo).
   Not a self-submodule: every tag would gitlink the previous one, nesting a copy per release under any

@@ -16,7 +16,7 @@ IntelliJ with a plain Shell Script run configuration.
 │   ├── bin/                       ← optional: helper scripts, on the sandbox's PATH
 │   ├── .dockerignore              ← keeps .claude-history out of the image build
 │   └── .claude-history/           ← Claude's ~/.claude (auth, transcripts, memory) - ignores itself
-├── .claude/settings.json          ← gets "attribution": false from init (committed)
+├── .claude/settings.json          ← gets "attribution": false + the org's hook guards from init (committed)
 ├── CLAUDE.md or .claude/CLAUDE.md ← the project's rules; init adds the import of the organisation rules
 └── .run/*.run.xml                 ← the IntelliJ run configurations (committed)
 ```
@@ -30,7 +30,7 @@ ai-sandbox/sandbox.sh init      # creates ai-sandbox-configuration/ (with empty 
 ```
 
 `init` also imports the [organisation rules](#organisation-rules-claudemd) into the project's `CLAUDE.md`
-and sets `"attribution": false` in `.claude/settings.json`.
+and sets `"attribution": false` and the organisation's hook guards in `.claude/settings.json`.
 
 Then edit `ai-sandbox-configuration/sandbox.conf` (and its `Dockerfile` if the project needs a JDK,
 Maven, an Android SDK, ...). [`examples/`](examples) has complete configurations to start from:
@@ -75,6 +75,13 @@ also apply when Claude runs on the host, not just in the sandbox.
 the host has it), which drops Claude's commit trailers and PR footer. Releases of Claude Code older
 than the boolean form reject it; they accept `{"commit": "", "pr": ""}` instead.
 
+It also registers the organisation's PreToolUse guards from [`rules/hooks/`](rules/hooks), which enforce
+the rules rather than state them - today [`guard-git-branch.sh`](rules/hooks/guard-git-branch.sh), which
+blocks a command that creates a git branch (rule 1). The command is
+`"$CLAUDE_PROJECT_DIR"/ai-sandbox/rules/hooks/guard-git-branch.sh`, so it applies on the host too, and a
+fix reaches the project with its next tag. Each sandbox open runs their tests and warns if one is not
+registered. The hooks need `jq` wherever Claude runs.
+
 ## Commands
 
 ```bash
@@ -91,6 +98,7 @@ ai-sandbox/sandbox.sh init             # scaffold ai-sandbox-configuration/ and 
 ai-sandbox/sandbox.sh update [X.Y.Z]   # upgrade: submodule -> newest (or given) tag, then its init
 ai-sandbox/sandbox.sh update-versions  # bump the version pins in the base + project Dockerfiles
 ai-sandbox/sandbox.sh update-versions --project-only  # ... the project's alone, leaving the submodule clean
+ai-sandbox/sandbox.sh update-versions --project-only --packages-only  # ... its Debian packages alone
 ```
 
 `continue` and `resume` are shorthands for `run claude --dangerously-skip-permissions --continue` /
@@ -209,9 +217,16 @@ a re-open is a fast no-op. That includes `run <cmd>` in a terminal: only a launc
 2. `npm ci` (`npm install` where there is no lockfile) in each `SANDBOX_NPM_DIRS` dir, when its lockfile
    changed. `ci` because `install` trusts the hidden `node_modules/.package-lock.json`, so it can report
    "up to date" over packages that do not match it.
-3. `.claude/hooks/tests/run-hook-tests.sh`, if the project has PreToolUse guards: they fail silently,
-   so they are proven here, in the environment that will run them, before any work happens.
-4. The project's `setup.d/*.sh`, in name order, with `step`/`skip`/`warn`/`none` and `STATE_DIR` (for
+3. Playwright's Chromium, for each of those dirs that declares Playwright, when its version changed. Only
+   the browser: its OS libraries are the project's to bake in (see `examples/java-maven`'s
+   `playwright-deps` stage), and it belongs in a `pw:/home/dev/.cache/ms-playwright` cache volume.
+4. Claude's background jobs (`~/.claude/jobs/<id>`) unchanged for `SANDBOX_HISTORY_DAYS`, which the
+   transcript cleanup does not cover (a job's `tmp/` can hold gigabytes). Pinned jobs are kept.
+5. The PreToolUse guards, which fail silently, so they are proven here, in the environment that will run
+   them, before any work happens: the organisation's ([`rules/hooks/`](rules/hooks), also checked for
+   being registered in `.claude/settings.json`), then the project's
+   `.claude/hooks/tests/run-hook-tests.sh`, if it has one.
+6. The project's `setup.d/*.sh`, in name order, with `step`/`skip`/`warn`/`none` and `STATE_DIR` (for
    "already done" markers, persisted with `~/.claude`) available.
 
 ## Shutdown — how the container is torn down
@@ -266,6 +281,9 @@ cache in the host's `/etc/docker/daemon.json` (then restart Docker):
 pinned package in a `BEGIN/END DEBIAN PACKAGES` block, in this repo's base Dockerfile **and** the
 project's. Then launch to prove the new pins install. The base's pins are this repo's to commit; a
 project's are the project's, so a project consuming this repo as a submodule uses `--project-only`.
+A project whose own update script manages its image tags (a JDK proven before it is pinned, a Maven kept
+in step with `pom.xml`) adds `--packages-only` and calls it for the Debian packages alone, which resolve
+against the base's Debian release - so there is no need to re-implement that mapping per project.
 
 The pins must keep moving, because Debian removes a superseded package version from its repositories and
 a dead pin fails the build on any host that does not already have the image.

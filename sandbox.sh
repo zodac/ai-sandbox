@@ -17,7 +17,8 @@
 #   ai-sandbox/sandbox.sh update [X.Y.Z]   # move this submodule to the newest (or given) release tag,
 #                                          # then run that version's init (its migrations)
 #   ai-sandbox/sandbox.sh update-versions  # bump the version pins in the base + project Dockerfiles
-#                                          # (--project-only leaves the base, and so the submodule, alone)
+#                                          # (--project-only leaves the base, and so the submodule, alone;
+#                                          #  --packages-only bumps the Debian packages, not the FROM tags)
 #
 # A launch REPLACES any sandbox of the SAME project checkout that is already running (they cannot
 # coexist — same name, same ports, same ~/.claude bind mount), stopping it only once the new image has
@@ -54,6 +55,14 @@ if [[ -z "${PROJECT_DIR:-}" ]] && self_hosted; then
 fi
 PROJECT_DIR="${PROJECT_DIR:-$(dirname "${HERE}")}"
 CONFIG_DIR="${SANDBOX_CONFIG_DIR:-${PROJECT_DIR}/ai-sandbox-configuration}"
+# This repo's directory relative to the project ("." in its own checkout; empty when it is not inside the
+# project, so not under /work in the sandbox): where setup.sh finds the organisation's hook guards.
+REPO_DIR=""
+if (( SELF_HOSTED == 1 )); then
+  REPO_DIR="."
+elif [[ "${HERE}" == "${PROJECT_DIR}"/* ]]; then
+  REPO_DIR="${HERE#"${PROJECT_DIR}"/}"
+fi
 
 # ── The project's settings: ai-sandbox-configuration/sandbox.conf ────────────
 # Plain bash, sourced. A variable already set in the ENVIRONMENT wins over the file, so a one-off
@@ -519,6 +528,7 @@ run() {
     -e SANDBOX_NPM_DIRS="${SANDBOX_NPM_DIRS-}" \
     -e SANDBOX_HISTORY_DAYS="${SANDBOX_HISTORY_DAYS}" \
     -e SANDBOX_REMOTE_CONTROL="${SANDBOX_REMOTE_CONTROL}" \
+    -e SANDBOX_REPO_DIR="${REPO_DIR}" \
     ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
     -v "$(to_docker_path "${PROJECT_DIR}")":/work \
     -v "$(to_docker_path "${CONFIG_DIR}")":/opt/ai-sandbox/config \
@@ -624,32 +634,55 @@ ensure_claude_rules() {  # <submodule path relative to the project>
 #   • `attribution: false` - no Co-Authored-By trailer, session link or PR footer from Claude. The
 #     boolean form needs a recent Claude Code; older releases reject it and only accept
 #     { "commit": "", "pr": "" }.
-# Merged with jq when the host has it (a Git Bash host may not). Without jq, an existing file that does
-# not mention the setting gets a warning instead of a hand-rolled JSON edit.
-ensure_claude_settings() {
+#   • the organisation's PreToolUse guards (rules/hooks/), by a $CLAUDE_PROJECT_DIR-relative command - no
+#     host path - so the committed file works in every checkout, and on the host as well as in the sandbox.
+#     Today that is guard-git-branch.sh (organisation rule 1). An entry is recognised by its exact command,
+#     so a project's own copy of a guard is left in place (and the two simply both run) until it is removed.
+# Merged with jq when the host has it (a Git Bash host may not). Without jq, an existing file that lacks a
+# setting gets a warning instead of a hand-rolled JSON edit.
+ensure_claude_settings() {  # <submodule path relative to the project>
   local settings="${PROJECT_DIR}/.claude/settings.json" rel_settings=".claude/settings.json" tmp
-  if [[ ! -f "${settings}" ]]; then
+  local guard="\"\$CLAUDE_PROJECT_DIR\"/$1/rules/hooks/guard-git-branch.sh"
+  # shellcheck disable=SC2016  # $cmd is jq's variable, not the shell's
+  local has_guard='[.hooks.PreToolUse[]?.hooks[]?.command] | any(. == $cmd)'
+  if [[ ! -f "${settings}" ]] && ! command -v jq >/dev/null 2>&1; then
     mkdir -p "$(dirname "${settings}")"
-    printf '{\n  "attribution": false\n}\n' > "${settings}"
+    printf '%s\n' '{' '  "attribution": false,' '  "hooks": {' '    "PreToolUse": [' '      {' \
+      '        "matcher": "Bash",' "        \"hooks\": [{ \"type\": \"command\", \"command\": \"${guard//\"/\\\"}\" }]" \
+      '      }' '    ]' '  }' '}' > "${settings}"
     echo "  created  ${rel_settings}"
     return 0
   fi
   if ! command -v jq >/dev/null 2>&1; then
     grep -q '"attribution"[[:space:]]*:[[:space:]]*false' "${settings}" \
       || echo "[sandbox] WARN: no jq to update ${rel_settings} - add \"attribution\": false to it by hand" >&2
+    grep -qF "/$1/rules/hooks/guard-git-branch.sh" "${settings}" \
+      || echo "[sandbox] WARN: no jq to update ${rel_settings} - register ${guard} as a Bash PreToolUse hook by hand" >&2
     return 0
   fi
-  if ! jq -e . "${settings}" >/dev/null 2>&1; then
-    echo "[sandbox] WARN: ${rel_settings} is not valid JSON - add \"attribution\": false to it by hand" >&2
-    return 0
-  fi
-  if jq -e '.attribution == false' "${settings}" >/dev/null; then
-    echo "  exists   \"attribution\": false in ${rel_settings}"
+  if [[ ! -f "${settings}" ]]; then
+    mkdir -p "$(dirname "${settings}")"
+    echo '{}' > "${settings}"
+    echo "  created  ${rel_settings}"
+  elif ! jq -e . "${settings}" >/dev/null 2>&1; then
+    echo "[sandbox] WARN: ${rel_settings} is not valid JSON - add \"attribution\": false and the ${guard##*/} hook by hand" >&2
     return 0
   fi
   tmp="${settings}.tmp.$$"
-  jq --indent 2 '.attribution = false' "${settings}" > "${tmp}" && mv -f "${tmp}" "${settings}"
-  echo "  updated  ${rel_settings} (\"attribution\": false)"
+  if jq -e '.attribution == false' "${settings}" >/dev/null; then
+    echo "  exists   \"attribution\": false in ${rel_settings}"
+  else
+    jq --indent 2 '.attribution = false' "${settings}" > "${tmp}" && mv -f "${tmp}" "${settings}"
+    echo "  updated  ${rel_settings} (\"attribution\": false)"
+  fi
+  if jq -e --arg cmd "${guard}" "${has_guard}" "${settings}" >/dev/null; then
+    echo "  exists   the ${guard##*/} hook in ${rel_settings}"
+  else
+    jq --indent 2 --arg cmd "${guard}" \
+      '.hooks.PreToolUse += [{matcher: "Bash", hooks: [{type: "command", command: $cmd}]}]' \
+      "${settings}" > "${tmp}" && mv -f "${tmp}" "${settings}"
+    echo "  updated  ${rel_settings} (the ${guard##*/} hook)"
+  fi
 }
 
 # Scaffold a project: its configuration directory from templates/configuration/, and the IntelliJ run
@@ -695,7 +728,7 @@ init() {
   done
   ensure_config
   ensure_claude_rules "${rel}"
-  ensure_claude_settings
+  ensure_claude_settings "${rel}"
   echo "[sandbox] ${created} file(s) created. Next: edit ${CONFIG_DIR#"${PROJECT_DIR}"/}/sandbox.conf (and its Dockerfile, if the project needs toolchains)."
 }
 
@@ -751,16 +784,23 @@ update() {
 # --project-only is for a project consuming this repo as a submodule: the base's pins belong to this repo
 # and arrive with its tags, and bumping them from a project dirties the submodule (which can then block
 # the project's own move to a newer tag). The project's Debian pins still resolve against the base's release.
+# --packages-only bumps the Debian package pins alone, leaving every `FROM image:tag` as it is: for a project
+# whose own update script owns its image tags (a JDK it proves before pinning, a Maven kept in step with
+# pom.xml), and calls this for the part every project shares - the packages, resolved on the base's Debian.
 update_versions() {
-  local dockerfiles=()
-  case "${1:-}" in
-    "") dockerfiles+=("${HERE}/image/base/Dockerfile") ;;
-    --project-only) ;;
-    *)
-      echo "[sandbox] update-versions: unknown option '$1' (the one option is --project-only)" >&2
-      exit 1
-      ;;
-  esac
+  local dockerfiles=() project_only=0 options=()
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --project-only)  project_only=1 ;;
+      --packages-only) options+=(--packages-only) ;;
+      *)
+        echo "[sandbox] update-versions: unknown option '$1' (the options are --project-only and --packages-only)" >&2
+        exit 1
+        ;;
+    esac
+    shift
+  done
+  (( project_only == 1 )) || dockerfiles+=("${HERE}/image/base/Dockerfile")
   if [[ -f "${CONFIG_DIR}/Dockerfile" ]]; then
     dockerfiles+=("${CONFIG_DIR}/Dockerfile")
   fi
@@ -768,7 +808,7 @@ update_versions() {
     echo "[sandbox] update-versions: ${CONFIG_DIR} has no Dockerfile" >&2
     exit 1
   fi
-  "${HERE}/.github/scripts/update_dependency_versions.sh" --dockerfiles "${dockerfiles[@]}"
+  "${HERE}/.github/scripts/update_dependency_versions.sh" ${options[@]+"${options[@]}"} --dockerfiles "${dockerfiles[@]}"
 }
 
 case "${1:-}" in

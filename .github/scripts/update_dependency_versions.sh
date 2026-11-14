@@ -11,7 +11,8 @@
 #                 - GitHub Actions in .github/workflows (latest stable release tag, best-effort)
 #
 #               Given Dockerfiles (--dockerfiles) - only those. This is what consuming projects run, via
-#               `ai-sandbox/sandbox.sh update-versions` (the base's Dockerfile plus the project's own):
+#               `ai-sandbox/sandbox.sh update-versions` (the base's Dockerfile plus the project's own),
+#               and with --packages-only before it, the Debian packages alone (no `FROM` is touched):
 #                 - every `FROM image:tag` - to the newest tag with the same major and the same suffix,
 #                   digits only in between (26.8.2-trixie -> 26.12.1-trixie; never 27.x, -bookworm,
 #                   -alpine or an -rc/-ea build). A major bump is a manual, reviewed change.
@@ -27,7 +28,7 @@
 #               "E: Version '...' for '...' was not found". Run this, then build, then commit.
 #
 # Usage:        .github/scripts/update_dependency_versions.sh [--skip-android-gradle]
-#               .github/scripts/update_dependency_versions.sh --dockerfiles <Dockerfile>...
+#               .github/scripts/update_dependency_versions.sh [--packages-only] --dockerfiles <Dockerfile>...
 #                 --skip-android-gradle  leave examples/android-gradle alone. The monthly workflow uses
 #                                        it: that image is too large to prove on a hosted runner, and an
 #                                        unproven bump must not reach a release.
@@ -51,7 +52,7 @@ WORKFLOWS_DIR="${REPO_ROOT}/.github/workflows"
 
 usage() {
     echo "Usage: $(basename "$0") [--skip-android-gradle]" >&2
-    echo "       $(basename "$0") --dockerfiles <Dockerfile>..." >&2
+    echo "       $(basename "$0") [--packages-only] --dockerfiles <Dockerfile>..." >&2
     exit 1
 }
 
@@ -188,13 +189,17 @@ update_apt_packages() {
 # Not best-effort: a package with no apt candidate fails the run, since committing the other bumps would
 # still leave a Dockerfile that cannot build. Pass the base first: the others' Debian packages are
 # resolved against its (just bumped) Debian release.
+# PACKAGES_ONLY (--packages-only) leaves the images alone: for a project whose own update script owns its
+# image tags and calls this for the Debian packages only.
 update_dockerfiles() {
     local dockerfile
     for dockerfile in "$@"; do
         echo
         echo "📄 ${dockerfile}"
-        echo "🔍 Images..."
-        update_images "${dockerfile}"
+        if [[ "${PACKAGES_ONLY}" -eq 0 ]]; then
+            echo "🔍 Images..."
+            update_images "${dockerfile}"
+        fi
         # After the images: packages are resolved against the (possibly just bumped) Debian base.
         echo "🔍 Debian packages..."
         update_apt_packages "${dockerfile}"
@@ -246,6 +251,12 @@ dockerfiles=(
     "${REPO_ROOT}/examples/android-gradle/Dockerfile"
     "${REPO_ROOT}/ai-sandbox-configuration/Dockerfile"
 )
+PACKAGES_ONLY=0
+if [[ "${1:-}" == "--packages-only" ]]; then
+    PACKAGES_ONLY=1
+    shift
+    [[ "${1:-}" == "--dockerfiles" ]] || usage
+fi
 case "${1:-}" in
     --dockerfiles)
         shift
