@@ -179,6 +179,18 @@ Both are on `master` and still have a `sandbox/` directory. Start from `examples
   re-downloads unless the old volumes are copied across.
 - npm in the base's Node skips Claude Code's postinstall script ("not yet covered by allowScripts"); Claude
   works regardless (same as the pre-migration images) - watch it if a Claude release starts needing it.
+- **A commit message needs a blank line after its subject.** `255a2c5` (the 1.2.0 feature commit) was
+  written as `git commit -F -` with the body straight under the subject, so git folded the whole message
+  into one subject line - and the release, being on `master` already, could not be fixed without
+  rewriting a pushed commit and tag. Check `git log -1 --format=%s` before pushing.
+- **`sandbox.sh update` only exists from 1.1.0.** In a project still on 1.0.x, `ai-sandbox/sandbox.sh
+  update` is not a command but a LAUNCH (running `update` in the sandbox): it rebuilds the image and
+  REPLACES the project's running sandbox, killing any session in it, before failing with
+  `exec: update: not found`. Check the submodule's tag first; from 1.0.x, move it by hand (`git -C
+  ai-sandbox checkout refs/tags/X.Y.Z`) and run the new `init`.
+- **Sourcing a project's update script to test one function: cut it at its entry point**, found by name
+  (`# ── Entry point`), never at a guessed call further down. Diurnal's update calls begin right after
+  that marker, so a cut at a later call ran its Java/Maven/Node updates against the real working tree.
 - An identical project Dockerfile reuses the host's build cache wholesale (DiceFive's port built in ~5s
   after the example was built), so test builds of real projects are cheap once one variant is cached.
 
@@ -189,3 +201,16 @@ Both are on `master` and still have a `sandbox/` directory. Start from `examples
   ready for review.
 - Keep the existing scripts' style: `set -euo pipefail`, heavily commented "why" explanations,
   `[sandbox]`/`[setup]` log prefixes, guarded/idempotent setup steps.
+- **Never stop, replace or kill another project's sandbox.** The user may have a live Claude session
+  in it, and a launch of the same checkout replaces it without asking (this happened to Tracker Profiles
+  on 2026-11-14 - see the `update` gotcha above). So, in any project other than a scratch one you made:
+  - Run only the commands that never launch or stop: `init`, `build`, `update-versions`, and `update` once
+    `git -C <project>/ai-sandbox describe --tags` shows 1.1.0 or newer. Anything else - no command,
+    `continue`, `resume`, `shell`, `run`, `attach`, `stop`, `prune`, or a command the submodule's
+    version doesn't have (`sandbox.sh` launches with an unknown word as the command) - needs the user's
+    explicit go-ahead for that project, after you've said what it will do.
+  - Before any `sandbox.sh` call there, check `docker ps --format '{{.Names}}' | grep sandbox`; if the
+    project's sandbox is running, say so before going further.
+  - Never `docker stop`/`kill`/`rm` a `*-sandbox` container, or delete its volumes, unless you created it.
+  - Test launches belong in a scratch project in the scratchpad (`PROJECT_DIR=<scratch>`), whose
+    container and volumes you clean up afterwards.
