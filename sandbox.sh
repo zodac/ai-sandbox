@@ -12,10 +12,13 @@
 #   ai-sandbox/sandbox.sh build            # (re)build the image
 #   ai-sandbox/sandbox.sh stop             # stop & remove a running sandbox (one-click teardown)
 #   ai-sandbox/sandbox.sh prune            # reclaim disk in the nested docker (build cache, images, volumes)
-#   ai-sandbox/sandbox.sh init             # create ai-sandbox-configuration/ and the IntelliJ run configs
-#                                          # (+ the org rules import in CLAUDE.md, .claude/settings.json)
-#   ai-sandbox/sandbox.sh update [X.Y.Z]   # move this submodule to the newest (or given) release tag,
-#                                          # then run that version's init (its migrations)
+#   ai-sandbox/sandbox.sh paste-image      # save the host clipboard's image where the sandbox sees it, and
+#                                          # put its path on the clipboard for Ctrl+V into Claude
+#   ai-sandbox/sandbox.sh init             # ONCE, for a new project: create ai-sandbox-configuration/, the
+#                                          # IntelliJ run configs, the org rules import in CLAUDE.md and
+#                                          # .claude/settings.json
+#   ai-sandbox/sandbox.sh update [X.Y.Z]   # move this submodule to the newest (or given) release tag, and
+#                                          # add what that release brings (new run configs, settings)
 #   ai-sandbox/sandbox.sh update-versions  # bump the version pins in the base + project Dockerfiles
 #                                          # (--project-only leaves the base, and so the submodule, alone;
 #                                          #  --packages-only bumps the Debian packages, not the FROM tags)
@@ -136,7 +139,7 @@ IMAGE="${NAME}"
 PROJECT_IMAGE="${NAME}-project"
 CONTAINER="${NAME}"
 CLAUDE_HISTORY_DIR="${CONFIG_DIR}/.claude-history"
-# Claude's temporary directory (CLAUDE_CODE_TMPDIR), bind-mounted from here: see claude_tmp_target.
+# Claude's temporary directory (CLAUDE_CODE_TMPDIR), bind-mounted from here: see mirrored_path.
 CLAUDE_TMP_DIR="${CLAUDE_HISTORY_DIR}/.sandbox-state/tmp"
 
 # Ports published to the HOST, space-separated `host:container` pairs - the one resource two sandboxes
@@ -235,40 +238,48 @@ to_docker_path() {
   if command -v cygpath &>/dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi
 }
 
-# Where Claude's temporary directory is mounted in the sandbox. That directory holds its session
-# scratchpads, where it saves the screenshots and other files it shows you. Claude prints each one as
-# `[image] <path>`, and in a terminal it knows can follow links (IntelliJ's: see TERMINAL_ENV) that path
-# is a link the IDE opens in its image viewer. In the container's own /tmp the file would be gone with
-# the container, and its path would not exist on the host. So the directory is CLAUDE_TMP_DIR, in the
-# checkout, mounted at the SAME absolute path inside the container: the path Claude prints is then
-# also the file's path on the host.
+# Host paths that are valid in the sandbox too. The sandbox sees the project at /work, but the host
+# knows it by its own path: dragging a file from IntelliJ into the terminal, *Copy Absolute Path* and a
+# host build's stack trace all give /home/.../<project>/... So the project is mounted a second time, at
+# its host path (the same directory, not a copy), and those paths open in the sandbox as well.
 #
-# That cannot work when the host path is not a Linux path (Windows: C:\...), contains a character `-v`
-# or `-e` would misread (a colon), or would land on the container's own directories (/work, dev's
-# home, /usr, ...). Then the directory goes to the image's fixed default, /opt/ai-sandbox/tmp: still
-# files on the host, just not a path the host can open.
-# Prints the container path, and returns 1 when it is the default (so there's no CLAUDE_CODE_TMPDIR to pass).
-CLAUDE_TMP_DEFAULT=/opt/ai-sandbox/tmp
-claude_tmp_target() {  # <host path, absolute>
+# Claude runs THERE too (SANDBOX_WORKDIR), not in /work, so the file paths it prints are host paths: in
+# IntelliJ's terminal each is a link (see TERMINAL_ENV), and a link to /work/... opens nothing on the
+# host. /work stays mounted for everything else (setup.sh, the projects' entrypoint.d hooks, paths in
+# older transcripts). Claude keys its sessions by its working directory, so launch.sh links the new key
+# to the sessions every earlier launch kept under /work's (see link_project_state there).
+#
+# Claude's temporary directory is mirrored the same way. It holds the session scratchpads, where Claude
+# saves the screenshots and other files it shows you, printed as `[image] <path>`. In a terminal Claude
+# knows can follow links (IntelliJ's: see TERMINAL_ENV) that path is a link the IDE opens in its image
+# viewer. In the container's own /tmp the file would be gone with the container, and its path would
+# not exist on the host. So the directory is CLAUDE_TMP_DIR, in the checkout, mounted at its host path:
+# the path Claude prints is then the file's path on the host as well.
+#
+# A path can't be mirrored when it is not a Linux path (Windows: C:\...), contains a character `-v` or
+# `-e` would misread (a colon), or would land on the container's own directories (/work, dev's home,
+# /usr, ...). Then the project is only at /work, where Claude runs as before, and the temporary
+# directory at the image's fixed default, /opt/ai-sandbox/tmp: still files on the host, just not a
+# path the host can open.
+mirrored_path() {  # <host path, absolute>: prints it, or fails when it can't be used in the container
   local path="$1"
   if command -v cygpath &>/dev/null || [[ "${path}" != /* || "${path}" == *:* ]]; then
-    echo "${CLAUDE_TMP_DEFAULT}"
     return 1
   fi
   case "${path}" in
-    /work | /work/* | /home/dev | /home/dev/* | /opt/ai-sandbox | /opt/ai-sandbox/* | /bin/* | /boot/* \
-      | /dev/* | /etc/* | /lib/* | /lib64/* | /proc/* | /root/* | /run/* | /sbin/* | /sys/* | /usr/* \
-      | /var/lib/docker/* | /var/log/*)
-      echo "${CLAUDE_TMP_DEFAULT}"
+    / | /work | /work/* | /home | /home/dev | /home/dev/* | /opt/ai-sandbox | /opt/ai-sandbox/* | /bin/* \
+      | /boot/* | /dev/* | /etc/* | /lib/* | /lib64/* | /proc/* | /root/* | /run/* | /sbin/* | /sys/* \
+      | /usr/* | /var/lib/docker/* | /var/log/*)
       return 1
       ;;
     *) printf '%s\n' "${path}" ;;
   esac
 }
+CLAUDE_TMP_DEFAULT=/opt/ai-sandbox/tmp
 
 # What Claude reads to tell which terminal it is in, passed through from the host's: docker sets only
 # TERM. Without them Claude takes IntelliJ's terminal for an unknown one, so it doesn't link the file
-# paths it prints (see claude_tmp_target), and it falls back on generic behaviour for anything else it
+# paths it prints (see mirrored_path), and it falls back on generic behaviour for anything else it
 # looks up by terminal. TERM itself is left as docker sets it: the host's could name a terminfo entry
 # the image doesn't have. An unset one is passed as empty, which Claude reads the same way; `attach`
 # passes them again, so a second shell from another terminal is not taken for the first.
@@ -382,7 +393,7 @@ build() {
 #   - .claude-history/ itself: an unprivileged bind mount source must already exist, or the daemon
 #     creates it ROOT-owned. It holds a `*` .gitignore of its own, so it ignores itself in any project
 #     without that project's .gitignore having to know about it;
-#   - its .sandbox-state/tmp, Claude's temporary directory (see claude_tmp_target), for the same reason;
+#   - its .sandbox-state/tmp, Claude's temporary directory (see mirrored_path), for the same reason;
 #   - .dockerignore keeping .claude-history out of the project image's build context: it holds the
 #     OAuth tokens, and one careless `COPY . ...` would bake them into an image.
 ensure_config() {
@@ -570,22 +581,31 @@ run() {
   #     rather than an opaque named volume: Claude's auth, transcripts and memory are visible with a
   #     normal `ls`/`cp`/`tar`, backed up by copying a directory, wiped with `rm -rf`, and inherently
   #     scoped to this one checkout;
-  #   - Claude's temporary directory, CLAUDE_TMP_DIR, at its host path where it can be (claude_tmp_target);
+  #   - the project AGAIN at its host path, and Claude's temporary directory (CLAUDE_TMP_DIR) at its
+  #     host path, where they can be (see mirrored_path);
   #   - the project's cache volumes (SANDBOX_CACHE_VOLUMES).
-  # Claude derives its per-project history key from the working directory, /work, which is the same in
-  # every sandbox - so `continue`/`resume` find the transcripts of earlier launches.
-  local project_mount config_mount history_mount tmp_mount tmp_target tmp_env=()
+  # Claude derives its per-project history key from its working directory: the host path where it can
+  # be (launch.sh links that key to the sessions of earlier launches), else /work.
+  local project_mount config_mount history_mount tmp_mount tmp_host tmp_target project_host
+  local tmp_env=() mirror_mounts=() workdir_env=()
   project_mount="$(to_docker_path "${PROJECT_DIR}")"
   config_mount="$(to_docker_path "${CONFIG_DIR}")"
   history_mount="$(to_docker_path "${CLAUDE_HISTORY_DIR}")"
   tmp_mount="$(to_docker_path "${CLAUDE_TMP_DIR}")"
-  # Absolute (PROJECT_DIR and SANDBOX_CONFIG_DIR may be relative), so it can name a container path.
-  # ensure_config has just created it, so the cd cannot fail.
-  local tmp_host
+  # Absolute (PROJECT_DIR and SANDBOX_CONFIG_DIR may be relative), so they can name container paths.
+  # run() has checked the project exists, and ensure_config has just created the temporary directory.
+  project_host="$(cd "${PROJECT_DIR}" && pwd)"
   tmp_host="$(cd "${CLAUDE_TMP_DIR}" && pwd)"
-  # shellcheck disable=SC2310  # its status only says whether the target is the image's default
-  if tmp_target="$(claude_tmp_target "${tmp_host}")"; then
+  # shellcheck disable=SC2310  # its status only says whether the path can be mirrored
+  if project_host="$(mirrored_path "${project_host}")"; then
+    mirror_mounts+=(-v "${project_mount}:${project_host}")
+    workdir_env=(-e "SANDBOX_WORKDIR=${project_host}")
+  fi
+  # shellcheck disable=SC2310  # as above
+  if tmp_target="$(mirrored_path "${tmp_host}")"; then
     tmp_env=(-e "CLAUDE_CODE_TMPDIR=${tmp_target}")
+  else
+    tmp_target="${CLAUDE_TMP_DEFAULT}"
   fi
   docker run "${tty[@]}" --rm \
     --name "${CONTAINER}" \
@@ -600,11 +620,13 @@ run() {
     -e SANDBOX_REPO_DIR="${REPO_DIR}" \
     "${TERMINAL_ENV[@]}" \
     ${tmp_env[@]+"${tmp_env[@]}"} \
+    ${workdir_env[@]+"${workdir_env[@]}"} \
     ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
     -v "${project_mount}":/work \
     -v "${config_mount}":/opt/ai-sandbox/config \
     -v "${NAME}-docker":/var/lib/docker \
     -v "${history_mount}":/home/dev/.claude \
+    ${mirror_mounts[@]+"${mirror_mounts[@]}"} \
     -v "${tmp_mount}":"${tmp_target}" \
     ${CACHE_MOUNTS[@]+"${CACHE_MOUNTS[@]}"} \
     ${PUBLISH[@]+"${PUBLISH[@]}"} \
@@ -621,9 +643,12 @@ attach() {
     echo "No ${CONTAINER} container is running - start one first." >&2
     exit 1
   fi
-  local tty=()
+  local tty=() workdir
   if [[ -t 0 ]] && [[ -t 1 ]]; then tty=(-it); else tty=(-i); fi
-  docker exec "${tty[@]}" -u dev -w /work -e HOME=/home/dev -e USER=dev "${TERMINAL_ENV[@]}" \
+  # Where the sandbox's Claude runs (see mirrored_path): the launch passed it as SANDBOX_WORKDIR, and a
+  # sandbox started by an older version has none.
+  workdir="$(docker exec "${CONTAINER}" printenv SANDBOX_WORKDIR 2>/dev/null)" || workdir=""
+  docker exec "${tty[@]}" -u dev -w "${workdir:-/work}" -e HOME=/home/dev -e USER=dev "${TERMINAL_ENV[@]}" \
     "${CONTAINER}" "${@:-bash}"
 }
 
@@ -758,54 +783,97 @@ ensure_claude_settings() {  # <submodule path relative to the project>
   fi
 }
 
-# Scaffold a project: its configuration directory from templates/configuration/, and the IntelliJ run
-# configurations from templates/run/ into the project's .run/ (which IntelliJ loads on its own, no
-# plugin needed). Never overwrites an existing file, so it is safe to re-run after an update to pick
-# up a new template. The templates are named *.run.xml.template, not *.run.xml: IntelliJ loads every
-# *.run.xml in the project, so in a project using this repo as a submodule the unsubstituted templates
-# (@SANDBOX_DIR@ still in the script path) would shadow the generated configs of the same name.
-# For the same reason this repo's own configurations are in .idea/runConfigurations/, not .run/.
-# The run configurations reference the launcher by a $PROJECT_DIR$-relative path
-# only - no host path - so they can be committed.
-init() {
-  local rel src dest created=0 templates
+# Set up a project, ONCE, when it starts using ai-sandbox: its configuration directory from
+# templates/configuration/, the IntelliJ run configurations from templates/run/ into the project's .run/
+# (which IntelliJ loads on its own, no plugin needed), the organisation rules import in CLAUDE.md and
+# .claude/settings.json. From then on `update` keeps the project current: it moves the submodule to a
+# release and adds whatever that release brings (add_release_content).
+#
+# The templates are named *.run.xml.template, not *.run.xml: IntelliJ loads every *.run.xml in the
+# project, so in a project using this repo as a submodule the unsubstituted templates (@SANDBOX_DIR@
+# still in the script path) would shadow the generated configs of the same name. For the same reason
+# this repo's own configurations are in .idea/runConfigurations/, not .run/. The run configurations
+# reference the launcher by a $PROJECT_DIR$-relative path only - no host path - so they can be committed.
+project_paths_ok() {  # the checks init and update's second half share
   if (( SELF_HOSTED == 1 )); then
-    echo "[sandbox] init: not needed - this is ai-sandbox's own checkout, which is its own sandbox" >&2
+    echo "[sandbox] $1: not needed - this is ai-sandbox's own checkout, which is its own sandbox" >&2
     echo "[sandbox]       (its ai-sandbox-configuration/, .idea/runConfigurations/ and .claude/ are committed by hand)" >&2
     exit 1
   fi
   if [[ "${HERE}" != "${PROJECT_DIR}"/* ]]; then
-    echo "[sandbox] init: ${HERE} is not inside ${PROJECT_DIR} - set PROJECT_DIR" >&2
+    echo "[sandbox] $1: ${HERE} is not inside ${PROJECT_DIR} - set PROJECT_DIR" >&2
     exit 1
   fi
-  rel="${HERE#"${PROJECT_DIR}"/}"
+}
+
+# What a release adds to a project, and all that init writes besides the configuration templates: each
+# run configuration, configuration file or setting the project doesn't have yet. Never overwrites or
+# removes anything: the files it finds are the project's (the run configurations may have been edited,
+# sandbox.conf and the Dockerfile always are), and a change to ai-sandbox's own behaviour arrives with
+# the submodule itself. So a release that needs an EXISTING file changed must do it here, as an
+# idempotent step of its own (ensure_claude_rules and ensure_claude_settings are such steps).
+ADDED=0
+add_release_content() {  # <"init"|"update">
+  local rel="${HERE#"${PROJECT_DIR}"/}" src templates mode="$1"
 
   copy_template() {  # <source> <destination> - substituting @SANDBOX_DIR@
     if [[ -e "$2" ]]; then
-      echo "  exists   ${2#"${PROJECT_DIR}"/}"
+      [[ "${mode}" == "init" ]] && echo "  exists   ${2#"${PROJECT_DIR}"/}"
       return 0
     fi
     mkdir -p "$(dirname "$2")"
     sed "s|@SANDBOX_DIR@|${rel}|g" "$1" > "$2"
     [[ -x "$1" ]] && chmod +x "$2"
-    echo "  created  ${2#"${PROJECT_DIR}"/}"
-    created=$((created + 1))
+    if [[ "${mode}" == "init" ]]; then echo "  created  ${2#"${PROJECT_DIR}"/}"; else echo "  added    ${2#"${PROJECT_DIR}"/}"; fi
+    ADDED=$((ADDED + 1))
   }
 
-  echo "[sandbox] initialising $(basename "${PROJECT_DIR}")..."
-  templates="$(find "${HERE}/templates/configuration" -type f)"
-  templates="$(LC_ALL=C sort <<< "${templates}")"
-  while IFS= read -r src; do
-    copy_template "${src}" "${CONFIG_DIR}/${src#"${HERE}/templates/configuration/"}"
-  done <<< "${templates}"
+  # The configuration templates only on init: once a project is set up, its configuration directory is
+  # its own - a file deleted there (an unneeded Dockerfile) must stay deleted.
+  if [[ "${mode}" == "init" ]]; then
+    templates="$(find "${HERE}/templates/configuration" -type f)"
+    templates="$(LC_ALL=C sort <<< "${templates}")"
+    while IFS= read -r src; do
+      copy_template "${src}" "${CONFIG_DIR}/${src#"${HERE}/templates/configuration/"}"
+    done <<< "${templates}"
+  fi
   for src in "${HERE}"/templates/run/*.run.xml.template; do
-    dest="${PROJECT_DIR}/.run/$(basename "${src}" .template)"
-    copy_template "${src}" "${dest}"
+    copy_template "${src}" "${PROJECT_DIR}/.run/$(basename "${src}" .template)"
   done
   ensure_config
   ensure_claude_rules "${rel}"
   ensure_claude_settings "${rel}"
-  echo "[sandbox] ${created} file(s) created. Next: edit ${CONFIG_DIR#"${PROJECT_DIR}"/}/sandbox.conf (and its Dockerfile, if the project needs toolchains)."
+}
+
+init() {
+  project_paths_ok init
+  # A project with a sandbox.conf is set up already, and init is not how it gets a new release: that is
+  # update. The `update` of releases up to 1.2.2 ends by running the NEW release's plain init, so a
+  # project upgraded by one of those lands here too, with its submodule already moved: the `update`
+  # suggested then finds it on the newest tag and only adds what the release brings.
+  if [[ -f "${CONFIG_DIR}/sandbox.conf" ]]; then
+    echo "[sandbox] ERROR: init: $(basename "${PROJECT_DIR}") is set up already" \
+         "(${CONFIG_DIR#"${PROJECT_DIR}"/}/sandbox.conf exists), and init is a one-time step for a new project." >&2
+    echo "[sandbox]        To take it to a new release, and add what that release brings: ${HERE#"${PROJECT_DIR}"/}/sandbox.sh update" >&2
+    exit 1
+  fi
+  echo "[sandbox] initialising $(basename "${PROJECT_DIR}")..."
+  add_release_content init
+  echo "[sandbox] ${ADDED} file(s) created. Next: edit ${CONFIG_DIR#"${PROJECT_DIR}"/}/sandbox.conf (and its Dockerfile, if the project needs toolchains)."
+}
+
+# update's second half, run by the release update has just checked out (`init --update`, see update).
+apply_update_content() {
+  local version
+  project_paths_ok update
+  version="$(git -C "${HERE}" describe --tags 2>/dev/null)" || version="this version"
+  echo "[sandbox] adding what ${version} brings..."
+  add_release_content update
+  if (( ADDED == 0 )); then
+    echo "[sandbox] no new files; review and commit the moved ${HERE#"${PROJECT_DIR}"/} submodule and any changed settings."
+  else
+    echo "[sandbox] ${ADDED} file(s) added; review and commit them with the moved ${HERE#"${PROJECT_DIR}"/} submodule."
+  fi
 }
 
 # Upgrade a project to a newer ai-sandbox: move the submodule to the newest X.Y.Z tag (or the one given),
@@ -852,14 +920,99 @@ update() {
   head_commit="$(git -C "${HERE}" rev-parse HEAD)"
   target_commit="$(git -C "${HERE}" rev-parse "refs/tags/${target}^{commit}")"
   if [[ "${head_commit}" == "${target_commit}" ]]; then
-    echo "[sandbox] ai-sandbox is already on ${target} - re-applying its scaffolding"
+    echo "[sandbox] ai-sandbox is already on ${target}"
   else
     git -C "${HERE}" -c advice.detachedHead=false checkout --quiet "refs/tags/${target}"
-    echo "[sandbox] ai-sandbox ${current} -> ${target} - applying its scaffolding"
+    echo "[sandbox] ai-sandbox ${current} -> ${target}"
   fi
-  echo "[sandbox] review and commit the result: the ${HERE#"${PROJECT_DIR}"/} submodule and any files below;"
   echo "[sandbox] the next launch rebuilds the image."
-  exec "${HERE}/sandbox.sh" init
+  # The second half - adding what the release brings (run configurations, settings) - is the NEW
+  # release's to do, so it runs from the checkout just made. As `init --update`: every release has
+  # `init` (which is how this worked up to 1.2.2, and so what an `update X.Y.Z` back to one of those
+  # still needs), and a release that doesn't know `--update` ignores it. A word an older sandbox.sh
+  # doesn't know as a command would LAUNCH the sandbox instead.
+  exec "${HERE}/sandbox.sh" init --update
+}
+
+# ── paste-image: the host clipboard's picture, handed to the sandbox ──────────
+# On the host, Ctrl+V of a screenshot works because Claude reads the clipboard itself (wl-paste, xclip).
+# In the sandbox it can't, and it must not be able to: the only way in would be mounting the display
+# server's socket, which lets anything in the sandbox log keystrokes and grab the screen (X11), or read
+# every password you copy without ever having focus (Wayland, on compositors with the data-control
+# protocol). So the HOST reads the clipboard, and only when you ask: this saves its image (as PNG) into
+# Claude's temporary directory, which the sandbox sees (see mirrored_path), and replaces it on the
+# clipboard with that file's path in the sandbox. Ctrl+V in Claude then pastes the path, which Claude
+# attaches as the image, as it does a file dragged into the terminal. Nothing in the sandbox can ask
+# for it. Never starts, stops or looks at a sandbox; the pictures go when SANDBOX_HISTORY_DAYS says.
+#
+# Runs on the host, so it uses the host's own tools: wl-paste/wl-copy (Wayland) or xclip (X11) on
+# Linux, osascript/pbcopy on macOS, PowerShell/clip.exe on Windows.
+clipboard_image_to() {  # <file>: the clipboard's image as PNG, or fails when it holds none
+  local file="$1"
+  if [[ -n "${WAYLAND_DISPLAY-}" ]] && command -v wl-paste &>/dev/null; then
+    wl-paste --list-types 2>/dev/null | grep -qx 'image/png' || return 1
+    wl-paste --type image/png > "${file}"
+  elif [[ -n "${DISPLAY-}" ]] && command -v xclip &>/dev/null; then
+    xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep -qx 'image/png' || return 1
+    xclip -selection clipboard -t image/png -o > "${file}"
+  elif command -v osascript &>/dev/null; then
+    osascript -e "set png to (the clipboard as «class PNGf»)" \
+              -e "set out to open for access (POSIX file \"${file}\") with write permission" \
+              -e 'write png to out' -e 'close access out' >/dev/null 2>&1
+  elif command -v powershell.exe &>/dev/null; then
+    local windows_file
+    windows_file="$(to_docker_path "${file}")"
+    # shellcheck disable=SC2016 # the $ variables are PowerShell's, so bash must not expand them
+    powershell.exe -NoProfile -STA -Command \
+      'Add-Type -AssemblyName System.Windows.Forms, System.Drawing;
+       $i = [System.Windows.Forms.Clipboard]::GetImage();
+       if ($i -eq $null) { exit 1 }; $i.Save($args[0], [System.Drawing.Imaging.ImageFormat]::Png)' \
+      "${windows_file}" >/dev/null 2>&1
+  else
+    echo "[sandbox] paste-image: no clipboard tool found (wl-paste, xclip, osascript or PowerShell)" >&2
+    return 1
+  fi
+  [[ -s "${file}" ]]
+}
+text_to_clipboard() {  # <text>
+  if [[ -n "${WAYLAND_DISPLAY-}" ]] && command -v wl-copy &>/dev/null; then
+    printf '%s' "$1" | wl-copy
+  elif [[ -n "${DISPLAY-}" ]] && command -v xclip &>/dev/null; then
+    # xclip stays behind to serve the selection; with its output closed, so this returns at once.
+    printf '%s' "$1" | xclip -selection clipboard -i >/dev/null 2>&1
+  elif command -v pbcopy &>/dev/null; then
+    printf '%s' "$1" | pbcopy
+  elif command -v clip.exe &>/dev/null; then
+    printf '%s' "$1" | clip.exe
+  else
+    return 1
+  fi
+}
+paste_image() {
+  local dir file name in_sandbox tmp_host
+  ensure_config
+  dir="${CLAUDE_TMP_DIR}/pastes"
+  mkdir -p "${dir}"
+  name="clipboard-$(date +%Y%m%d-%H%M%S).png"
+  file="${dir}/${name}"
+  # shellcheck disable=SC2310  # its status is the answer: whether there was an image
+  if ! clipboard_image_to "${file}"; then
+    rm -f "${file}"
+    echo "[sandbox] paste-image: the clipboard holds no image (copy a screenshot first)" >&2
+    exit 1
+  fi
+  # The file's path as the sandbox sees it: as run() mounts the directory.
+  tmp_host="$(cd "${CLAUDE_TMP_DIR}" && pwd)"
+  # shellcheck disable=SC2310  # its status only says whether the path can be mirrored
+  in_sandbox="$(mirrored_path "${tmp_host}")" || in_sandbox="${CLAUDE_TMP_DEFAULT}"
+  in_sandbox="${in_sandbox}/pastes/${name}"
+  # shellcheck disable=SC2310  # a failure only means the path has to be copied by hand
+  if text_to_clipboard "${in_sandbox}"; then
+    echo "[sandbox] saved the clipboard's image; its path is on the clipboard now - paste it into Claude:"
+  else
+    echo "[sandbox] saved the clipboard's image (could not put its path on the clipboard) - paste this into Claude:"
+  fi
+  echo "${in_sandbox}"
 }
 
 # --project-only is for a project consuming this repo as a submodule: the base's pins belong to this repo
@@ -897,9 +1050,11 @@ case "${1:-}" in
   stop)     stop ;;
   prune)    prune ;;
   attach)   shift; attach "$@" ;;
-  init)     init ;;
+  # `init --update` is update's second half (see update), not a command of its own.
+  init)     if [[ "${2:-}" == "--update" ]]; then apply_update_content; else init; fi ;;
   update)   shift; update "$@" ;;
   update-versions) shift; update_versions "$@" ;;
+  paste-image) paste_image ;;
   shell)    shift; run bash ;;
   # The two ways back into an earlier Claude session. Equivalent to (and interchangeable with) the
   # long forms `run claude --dangerously-skip-permissions --continue|--resume`.

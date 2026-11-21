@@ -97,6 +97,13 @@ export RUN_SETUP
 # --preserve-env that each project then edited. setpriv only changes the identity: the image's ENV
 # (base, project and final), sandbox.sh's `-e` values and TZ all pass through untouched, so a project
 # Dockerfile's ENV needs nothing here. --init-groups picks up dev's supplementary groups (docker).
-cd /work
+# The working directory: the project's host path, which sandbox.sh mounts as well as /work where it
+# can (SANDBOX_WORKDIR; see mirrored_path there), so the paths Claude prints open on the host.
+workdir="${SANDBOX_WORKDIR:-/work}"
+if [[ ! -d "${workdir}" ]]; then
+  echo "[sandbox] WARN: SANDBOX_WORKDIR ${workdir} is not mounted - working in /work" >&2
+  workdir=/work
+fi
+cd "${workdir}"
 export HOME=/home/dev USER=dev LOGNAME=dev SHELL=/bin/bash
 exec setpriv --reuid=dev --regid=dev --init-groups /usr/local/bin/sandbox-launch.sh "$@"

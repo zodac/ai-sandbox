@@ -152,6 +152,58 @@ if [[ -f "${SNAP}/host-gitignore" ]]; then
     || echo "[sandbox] WARN: could not install the host's global git ignore file" >&2
 fi
 
+# ── Claude's per-project state, under the host path's key too ────────────────
+# Claude keys three things by its working directory, resolved through symlinks: the session directory
+# (projects/<path with every non-alphanumeric as "-">), the per-project entry in .claude.json (trust,
+# per-project settings, the last session) and the `project` field of each history.jsonl line (the
+# up-arrow prompt history). Every earlier launch ran in /work, so they are all /work's; now the
+# entrypoint runs Claude in the project's host path where it can (SANDBOX_WORKDIR), and it would start
+# with no sessions to `continue` or `resume`. So, without moving or rewriting any of /work's:
+#   • projects/<host key> becomes a symlink to projects/-work, which stays the one real directory. A
+#     checkout that moves on the host gets a new key, linked to the same sessions in turn; and an
+#     older ai-sandbox, in /work, still finds every session, including the ones made since.
+#   • .claude.json's "/work" entry is copied to the host path, once, when the host path has none (with a
+#     backup of the file first, in .sandbox-state).
+#   • history.jsonl is left alone: up-arrow offers this path's prompts only, so earlier ones are not
+#     offered again. Rewriting the shared file isn't worth that.
+# A key that already exists as a real directory is left as it is (with a warning): it is sessions made
+# some other way, and merging them is a job for a person.
+link_project_state() {
+  local cwd key projects="${CCD}/projects" tmp link
+  cwd="$(pwd -P)"
+  [[ "${cwd}" != /work ]] || return 0
+  key="${cwd//[^a-zA-Z0-9]/-}"
+  if ((${#key} > 200)); then
+    # Claude shortens a longer one with a hash of its own, which can't be worked out here.
+    echo "[sandbox] WARN: ${cwd} is too long a path to link to earlier sessions - start them with" \
+         "'cd /work && claude --resume'" >&2
+    return 0
+  fi
+  mkdir -p "${projects}/-work"
+  if [[ -L "${projects}/${key}" || ! -e "${projects}/${key}" ]]; then
+    link="$(readlink "${projects}/${key}" 2>/dev/null)" || link=""
+    if [[ "${link}" != "-work" ]]; then
+      ln -sfn -- -work "${projects}/${key}" \
+        && echo "[sandbox] linked Claude's sessions for ${cwd} to those of /work"
+    fi
+  else
+    echo "[sandbox] WARN: ${projects}/${key} is a directory of its own, so its sessions and /work's are" \
+         "kept apart (move its files into projects/-work and remove it to join them)" >&2
+  fi
+  command -v jq >/dev/null 2>&1 || return 0
+  jq -e --arg cwd "${cwd}" '.projects["/work"] != null and .projects[$cwd] == null' "${CFG}" \
+    >/dev/null 2>&1 || return 0
+  [[ -f "${SNAP}/claude.json.before-host-path" ]] || cp -p "${CFG}" "${SNAP}/claude.json.before-host-path"
+  tmp="${CFG}.tmp.$$"
+  if jq --arg cwd "${cwd}" '.projects[$cwd] = .projects["/work"]' "${CFG}" > "${tmp}" 2>/dev/null; then
+    mv -f "${tmp}" "${CFG}" && echo "[sandbox] copied Claude's /work project settings to ${cwd}"
+  else
+    rm -f "${tmp}"
+    echo "[sandbox] WARN: could not copy Claude's /work project settings to ${cwd}" >&2
+  fi
+}
+link_project_state
+
 if [[ "${RUN_SETUP:-0}" = "1" ]]; then
   /usr/local/bin/sandbox-setup.sh || true
 fi

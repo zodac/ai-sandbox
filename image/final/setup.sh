@@ -134,7 +134,7 @@ else
 fi
 
 # Claude's temporary directory (CLAUDE_CODE_TMPDIR) is in .claude-history now, not the container's own
-# /tmp (see claude_tmp_target in sandbox.sh), so it no longer goes with the container: its session
+# /tmp (see mirrored_path in sandbox.sh), so it no longer goes with the container: its session
 # scratchpads (screenshots, test output) are kept for SANDBOX_HISTORY_DAYS, like the transcripts that
 # mention them. File by file, so a scratchpad still in use keeps its files however long ago it began.
 # Safe to run here: setup runs once per container, before its first session (`attach` skips it).

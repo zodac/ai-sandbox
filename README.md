@@ -26,11 +26,13 @@ IntelliJ with a plain Shell Script run configuration.
 ```bash
 cd <project>
 git submodule add https://github.com/zodac/ai-sandbox.git ai-sandbox
-ai-sandbox/sandbox.sh init      # creates ai-sandbox-configuration/ (with empty bin/, entrypoint.d/, setup.d/) and .run/ - never overwrites
+ai-sandbox/sandbox.sh init      # once: creates ai-sandbox-configuration/ (with empty bin/, entrypoint.d/, setup.d/) and .run/ - never overwrites
 ```
 
-`init` also imports the [organisation rules](#organisation-rules-claudemd) into the project's `CLAUDE.md`
-and sets `"attribution": false` and the organisation's hook guards in `.claude/settings.json`.
+`init` is a one-time step for a project that is starting to use ai-sandbox; after that, `update` keeps
+it current (see [Upgrading a project](#upgrading-a-project)). It also imports the
+[organisation rules](#organisation-rules-claudemd) into the project's `CLAUDE.md` and sets
+`"attribution": false` and the organisation's hook guards in `.claude/settings.json`.
 
 Then edit `ai-sandbox-configuration/sandbox.conf` (and its `Dockerfile` if the project needs a JDK,
 Maven, an Android SDK, ...). [`examples/`](examples) has complete configurations to start from:
@@ -50,17 +52,29 @@ In IntelliJ, the run configurations appear on their own (`.run/` is loaded witho
 | `Claude Sandbox (Shell)`         | a bash shell instead of Claude                                           |
 | `Claude Sandbox (Attach Shell)`  | a second shell in the sandbox that is already running                    |
 | `Claude Sandbox (Stop)`          | stop and remove the running sandbox (the closest thing to a Stop button) |
+| `Claude Sandbox (Paste Image)`   | hand the clipboard's image to Claude (see *Pasting an image* below)      |
 
 They reference the launcher only as `$PROJECT_DIR$/ai-sandbox/sandbox.sh`, so they hold no host path
-and are safe to commit. All but `Stop` have **Execute in the terminal** ticked: Claude's TUI needs a
-real PTY, and without one `sandbox.sh` falls back to non-interactive mode.
+and are safe to commit. All but `Stop` and `Paste Image` have **Execute in the terminal** ticked:
+Claude's TUI needs a real PTY, and without one `sandbox.sh` falls back to non-interactive mode.
+
+**Pasting an image.** Ctrl+V of a screenshot doesn't work in the sandbox: Claude reads the clipboard
+itself, and the sandbox is deliberately given no access to the host's display (that would let it log
+keystrokes or read every password you copy). Instead, copy the screenshot, run
+`Claude Sandbox (Paste Image)` (`sandbox.sh paste-image`), then press Ctrl+V in Claude. It saves the
+clipboard's image into Claude's temporary directory, which the sandbox can see, and replaces the
+clipboard with that file's path, which Claude attaches as the image. It runs on the host (wl-paste or
+xclip on Linux, osascript on macOS, PowerShell on Windows) and never touches the sandbox. For a
+keyboard shortcut, add it as an IntelliJ External Tool (*Settings → Tools → External Tools*: program
+`$ProjectFileDir$/ai-sandbox/sandbox.sh`, arguments `paste-image`, working directory
+`$ProjectFileDir$`) and bind it under *Keymap → External Tools*.
 
 ## Organisation rules (CLAUDE.md)
 
 [`rules/CLAUDE.md`](rules/CLAUDE.md) holds the rules every ai-sandbox project shares. A project doesn't
 copy them: its own `CLAUDE.md` imports the file, so moving the submodule to a newer tag updates the rules
-too. The project's own rules stay in its `CLAUDE.md`, under the import. `init` adds the import line, and
-re-running it is safe:
+too. The project's own rules stay in its `CLAUDE.md`, under the import. `init` adds the import line (and
+`update` adds it to a project that lacks it):
 
 | Project file                            | Import line                       |
 | --------------------------------------- | --------------------------------- |
@@ -94,8 +108,9 @@ ai-sandbox/sandbox.sh attach [cmd...]  # another shell (or command) in the RUNNI
 ai-sandbox/sandbox.sh build            # (re)build the image; a launch does this anyway
 ai-sandbox/sandbox.sh stop             # stop & remove a running sandbox
 ai-sandbox/sandbox.sh prune            # reclaim disk in the nested docker (see Persistence)
-ai-sandbox/sandbox.sh init             # scaffold ai-sandbox-configuration/ and .run/
-ai-sandbox/sandbox.sh update [X.Y.Z]   # upgrade: submodule -> newest (or given) tag, then its init
+ai-sandbox/sandbox.sh paste-image      # the clipboard's image, for Claude (see Pasting an image)
+ai-sandbox/sandbox.sh init             # once, for a new project: scaffold ai-sandbox-configuration/ and .run/
+ai-sandbox/sandbox.sh update [X.Y.Z]   # upgrade: submodule -> newest (or given) tag, plus what it adds
 ai-sandbox/sandbox.sh update-versions  # bump the version pins in the base + project Dockerfiles
 ai-sandbox/sandbox.sh update-versions --project-only  # ... the project's alone, leaving the submodule clean
 ai-sandbox/sandbox.sh update-versions --project-only --packages-only  # ... its Debian packages alone
@@ -103,13 +118,14 @@ ai-sandbox/sandbox.sh update-versions --project-only --packages-only  # ... its 
 
 `continue` and `resume` are shorthands for `run claude --dangerously-skip-permissions --continue` /
 `--resume`; the long forms still work. The transcripts they resume from live in
-`ai-sandbox-configuration/.claude-history/`, which survives every restart, and Claude finds them
-because the project is always mounted at the same `/work`.
+`ai-sandbox-configuration/.claude-history/`, which survives every restart. Claude finds them by the
+directory it runs in: the project's host path (see *Host paths* under Persistence), linked at each
+launch to the sessions of earlier launches, which ran in `/work`.
 
 ## Why this is safe
 
-- **Only the project directory is mounted** (→ `/work`, plus its configuration again at
-  `/opt/ai-sandbox/config`). No `$HOME`, no SSH keys, no other projects are visible to the agent. The
+- **Only the project directory is mounted** (→ `/work` and its own host path, plus its configuration
+  again at `/opt/ai-sandbox/config`). No `$HOME`, no SSH keys, no other projects are visible to the agent. The
   one thing copied in from the host's home is a sanitised git config (see *Notes*).
 - **The host Docker socket is NOT mounted.** The sandbox runs its *own* nested Docker daemon, so any
   container a session spins up lives and dies *inside* the sandbox.
@@ -262,6 +278,17 @@ with `rm -rf`. The rest are pure rebuildable caches, so they stay named volumes.
 `.claude-history/.sandbox-state/bash_history` and written after every command, so it survives a
 closed tab, a re-attach and a new container alike.
 
+**Host paths work in the sandbox.** On a Linux or macOS host the project is mounted a second time at
+its host path (the same directory), and Claude runs there. So a file dragged from IntelliJ into the
+terminal, a path from *Copy Absolute Path* or a host build's stack trace opens in the sandbox, and the
+file paths Claude prints are links IntelliJ can open. `/work` is still mounted, for scripts and older
+transcripts. Claude keys its sessions by the directory it runs in, so each launch links that key to
+`.claude-history/projects/-work`, where the sessions of earlier launches are (and still the one real
+directory: a moved checkout, or an older ai-sandbox in `/work`, finds them all), and copies the
+project's `/work` settings in `.claude.json` (backed up first, to
+`.sandbox-state/claude.json.before-host-path`). The up-arrow prompt history of earlier launches stays
+with `/work`. On Windows, Claude runs in `/work` as before.
+
 **Claude's temporary directory** (its session scratchpads: the screenshots and other files it shows you)
 is `.claude-history/.sandbox-state/tmp`, not the container's `/tmp`, so those files are on the host.
 On a Linux or macOS host it is mounted inside the container at its **host** path. The
@@ -314,16 +341,30 @@ builds and still lints, and pushes it to `master`, which releases it.
 ai-sandbox/sandbox.sh update          # or: update 1.2.3
 ```
 
-This moves the submodule to the newest `X.Y.Z` release tag (or the one given), then runs **that**
-version's `init`. That's where a release puts its migrations: new templates, the organisation rules
-import, project settings. `init` never overwrites anything, so running `update` again does no harm. It
-refuses if the submodule has local changes, and it doesn't commit: review and commit the moved submodule
-along with any files it created or updated. The next launch rebuilds the image.
+This is the one command for taking a project to a new release. It moves the submodule to the newest
+`X.Y.Z` release tag (or the one given) - which brings every change to the launcher, the image and the
+organisation rules - and then, run by **that** release, adds what the release brings to the project:
 
-A project's own update script can still move the tag itself. If it does, run `ai-sandbox/sandbox.sh init`
-afterwards, which is the second half of `update`. `update` only exists from the release that added it, so
-the first move onto that release has to be done by hand:
-`git -C ai-sandbox fetch --tags && git -C ai-sandbox checkout <tag> && ai-sandbox/sandbox.sh init`.
+- **new run configurations** in `.run/` (one you deleted comes back, as it is part of the set);
+- **new settings** the release needs: the organisation rules import in `CLAUDE.md`, and
+  `.claude/settings.json`'s `"attribution": false` and hook guards.
+
+It never overwrites or deletes a file: what is already there is the project's. The configuration
+directory is not re-scaffolded either (a `Dockerfile` you removed stays removed). A release that needs an
+existing file changed does it as a step of its own in `update`, and says so. Running `update` again does
+no harm. It refuses if the submodule has local changes, and it doesn't commit: review and commit the moved
+submodule along with any files it added or changed. The next launch rebuilds the image.
+
+`init` is not part of upgrading: it is for a new project only, and on a project that is set up already
+(it has `ai-sandbox-configuration/sandbox.conf`) it fails with an error that suggests `update`. Upgrading
+from 1.2.2 or older shows that error too, because that release's `update` ends by running the new
+release's `init`. The submodule has moved by then, so run `update` once more to add what the release
+brings.
+
+A project's own update script can still move the tag itself. If it does, run `ai-sandbox/sandbox.sh update`
+afterwards with that tag (`update X.Y.Z`): with the submodule already there, it only adds what the release
+brings. `update` only exists from 1.1.0, so a project on 1.0.x moves by hand once, and lets that release's
+`init` add the rest: `git -C ai-sandbox fetch --tags && git -C ai-sandbox checkout <tag> && ai-sandbox/sandbox.sh init`.
 
 ## Developing ai-sandbox in its own sandbox
 

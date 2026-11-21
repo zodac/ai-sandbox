@@ -54,8 +54,14 @@ LABEL net.zodac.sandbox.claude-code-version="${CLAUDE_CODE_VERSION}"
 # Claude's temporary directory: its session scratchpads, where the screenshots and other files it shows
 # you land. sandbox.sh bind-mounts .claude-history/.sandbox-state/tmp here so they are files on the host,
 # and on a Linux or macOS host mounts it at its HOST path instead and points this there, so the
-# `[image] <path>` Claude prints is a path the host's IDE can open (see claude_tmp_target in sandbox.sh).
-ENV CLAUDE_CODE_TMPDIR=/opt/ai-sandbox/tmp
+# `[image] <path>` Claude prints is a path the host's IDE can open (see mirrored_path in sandbox.sh).
+#
+# LANG: a UTF-8 locale, as on the host. Debian's image sets none, so everything ran in the C locale and
+# mangled non-ASCII text: bash's line editing, `ls`/`git` output, a commit message written in vim. C.UTF-8
+# ships with libc, so it needs no locales package. Here rather than in the base image so that a change to
+# it never rebuilds a project's toolchain layers; a LANG the project's Dockerfile sets is kept.
+ENV CLAUDE_CODE_TMPDIR=/opt/ai-sandbox/tmp \
+    LANG=${LANG:-C.UTF-8}
 
 # ── Entrypoint + helper scripts (most-edited files, cheapest layer) ──────────
 # --chmod sets the mode inline, avoiding a second layer for a `chmod +x`.
