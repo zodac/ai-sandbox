@@ -262,6 +262,15 @@ with `rm -rf`. The rest are pure rebuildable caches, so they stay named volumes.
 `.claude-history/.sandbox-state/bash_history` and written after every command, so it survives a
 closed tab, a re-attach and a new container alike.
 
+**Claude's temporary directory** (its session scratchpads: the screenshots and other files it shows you)
+is `.claude-history/.sandbox-state/tmp`, not the container's `/tmp`, so those files are on the host.
+On a Linux or macOS host it is mounted inside the container at its **host** path. The
+`[image] <path>` lines Claude prints then name a file the host can open: in IntelliJ's terminal (whose
+`TERMINAL_EMULATOR`, like `TERM_PROGRAM` and `COLORTERM`, is passed into the sandbox so Claude knows
+the terminal) the path is a link that opens the picture in the IDE. On Windows it is mounted at
+`/opt/ai-sandbox/tmp` instead, which the host cannot open, but the files are still in that directory.
+Files older than `SANDBOX_HISTORY_DAYS` are deleted at the next launch.
+
 **The `-docker` volume is the one that grows.** Every nested build leaves layers and BuildKit cache
 behind; measured at 77 GB on a two-month-old sandbox of a build-heavy project. The image bakes in a
 BuildKit GC policy ([`daemon.json`](image/base/daemon.json): 20 GB cap, a week's retention), and

@@ -51,6 +51,11 @@ RUN --mount=type=cache,target=/home/dev/.npm,uid=${UID},gid=${GID},sharing=locke
     && runuser -u dev -- npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 # Read back by sandbox.sh's offline fallback.
 LABEL net.zodac.sandbox.claude-code-version="${CLAUDE_CODE_VERSION}"
+# Claude's temporary directory: its session scratchpads, where the screenshots and other files it shows
+# you land. sandbox.sh bind-mounts .claude-history/.sandbox-state/tmp here so they are files on the host,
+# and on a Linux or macOS host mounts it at its HOST path instead and points this there, so the
+# `[image] <path>` Claude prints is a path the host's IDE can open (see claude_tmp_target in sandbox.sh).
+ENV CLAUDE_CODE_TMPDIR=/opt/ai-sandbox/tmp
 
 # ── Entrypoint + helper scripts (most-edited files, cheapest layer) ──────────
 # --chmod sets the mode inline, avoiding a second layer for a `chmod +x`.

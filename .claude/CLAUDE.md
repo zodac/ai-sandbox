@@ -115,6 +115,16 @@ reference material only (git-ignored), to be deleted once everything has been mi
 - **Git settings** are a sanitised copy of the host's global config (`export_git_config` in `sandbox.sh`,
   installed by `launch.sh` via `.sandbox-state`), not a mount of `~/.gitconfig`. Credentials stay out: the
   sandbox can commit but not push (no SSH client, per-session `gh auth login`).
+- **Claude's temp dir** (`CLAUDE_CODE_TMPDIR`: scratchpads, so its screenshots) is
+  `.claude-history/.sandbox-state/tmp`, mounted at its own host path where it can be
+  (`claude_tmp_target` in `sandbox.sh`), and the host's `TERMINAL_EMULATOR`/`TERM_PROGRAM`/`COLORTERM`
+  are passed in. Claude prints a file it shows as `[image] <path>`, a link only when it knows the
+  terminal (`TERMINAL_EMULATOR=JetBrains-JediTerm` for IntelliJ) - and only an openable one when the
+  path exists on the host. Inline pictures are not possible in IntelliJ: Claude Code draws them only in
+  kitty/ghostty (kitty graphics) and iTerm2 3.5+. The IntelliJ plugin's IDE integration (selection
+  context, IDE diffs) was deliberately left out: it needs the host's `~/.claude/ide` tokens, a route to
+  the plugin's host-loopback websocket and `/work` mapped to the host path, i.e. a channel from the
+  sandbox into the host IDE.
 - **History retention** is `SANDBOX_HISTORY_DAYS` in `sandbox.conf` (default 14) → Claude's
   `cleanupPeriodDays`, validated on the host so a typo fails loudly.
 

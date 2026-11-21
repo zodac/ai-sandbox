@@ -104,7 +104,7 @@ for dir in ${npm_dirs+"${npm_dirs[@]}"}; do
 done
 [[ "${pw_found}" -eq 1 ]] || none "Playwright (not a dependency in SANDBOX_NPM_DIRS)"
 
-# ── 4. Claude's old background jobs ──────────────────────────────────────────
+# ── 4. Claude's old background jobs and temporary files ──────────────────────
 # Each job (~/.claude/jobs/<id>) is deleted once nothing in it has changed for SANDBOX_HISTORY_DAYS.
 # launch.sh's cleanupPeriodDays covers session transcripts and their side-car directories, not these, and
 # a job's tmp/ can hold gigabytes (one kept a whole emulator image and SDK copy). It goes by the newest
@@ -130,6 +130,28 @@ else
     step "deleted ${removed} background job(s) unchanged for ${history_days} days"
   else
     skip "old background jobs"
+  fi
+fi
+
+# Claude's temporary directory (CLAUDE_CODE_TMPDIR) is in .claude-history now, not the container's own
+# /tmp (see claude_tmp_target in sandbox.sh), so it no longer goes with the container: its session
+# scratchpads (screenshots, test output) are kept for SANDBOX_HISTORY_DAYS, like the transcripts that
+# mention them. File by file, so a scratchpad still in use keeps its files however long ago it began.
+# Safe to run here: setup runs once per container, before its first session (`attach` skips it).
+tmp_dir="${CLAUDE_CODE_TMPDIR-}"
+if [[ ! "${history_days}" =~ ^[1-9][0-9]*$ ]]; then
+  warn "SANDBOX_HISTORY_DAYS is '${history_days}', not a number of days: old temporary files are kept"
+elif [[ -z "${tmp_dir}" || ! -d "${tmp_dir}" ]]; then
+  none "old temporary files (no temporary directory)"
+else
+  removed="$(find "${tmp_dir}" -mindepth 1 -type f -mtime "+${history_days}" -print -delete 2>/dev/null | wc -l)"
+  # Then the directories that left empty. None is in use yet (setup runs before the session starts),
+  # and Claude recreates any it needs.
+  find "${tmp_dir}" -mindepth 1 -depth -type d -empty -delete 2>/dev/null || true
+  if ((removed > 0)); then
+    step "deleted ${removed} temporary file(s) older than ${history_days} days"
+  else
+    skip "old temporary files"
   fi
 fi
 

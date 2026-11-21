@@ -136,6 +136,8 @@ IMAGE="${NAME}"
 PROJECT_IMAGE="${NAME}-project"
 CONTAINER="${NAME}"
 CLAUDE_HISTORY_DIR="${CONFIG_DIR}/.claude-history"
+# Claude's temporary directory (CLAUDE_CODE_TMPDIR), bind-mounted from here: see claude_tmp_target.
+CLAUDE_TMP_DIR="${CLAUDE_HISTORY_DIR}/.sandbox-state/tmp"
 
 # Ports published to the HOST, space-separated `host:container` pairs - the one resource two sandboxes
 # can still collide on (two cannot both hold the same host port). Unlike the names it fails LOUDLY
@@ -232,6 +234,48 @@ SANDBOX_TIMEZONE="${SANDBOX_TZ:-$(host_timezone)}"
 to_docker_path() {
   if command -v cygpath &>/dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi
 }
+
+# Where Claude's temporary directory is mounted in the sandbox. That directory holds its session
+# scratchpads, where it saves the screenshots and other files it shows you. Claude prints each one as
+# `[image] <path>`, and in a terminal it knows can follow links (IntelliJ's: see TERMINAL_ENV) that path
+# is a link the IDE opens in its image viewer. In the container's own /tmp the file would be gone with
+# the container, and its path would not exist on the host. So the directory is CLAUDE_TMP_DIR, in the
+# checkout, mounted at the SAME absolute path inside the container: the path Claude prints is then
+# also the file's path on the host.
+#
+# That cannot work when the host path is not a Linux path (Windows: C:\...), contains a character `-v`
+# or `-e` would misread (a colon), or would land on the container's own directories (/work, dev's
+# home, /usr, ...). Then the directory goes to the image's fixed default, /opt/ai-sandbox/tmp: still
+# files on the host, just not a path the host can open.
+# Prints the container path, and returns 1 when it is the default (so there's no CLAUDE_CODE_TMPDIR to pass).
+CLAUDE_TMP_DEFAULT=/opt/ai-sandbox/tmp
+claude_tmp_target() {  # <host path, absolute>
+  local path="$1"
+  if command -v cygpath &>/dev/null || [[ "${path}" != /* || "${path}" == *:* ]]; then
+    echo "${CLAUDE_TMP_DEFAULT}"
+    return 1
+  fi
+  case "${path}" in
+    /work | /work/* | /home/dev | /home/dev/* | /opt/ai-sandbox | /opt/ai-sandbox/* | /bin/* | /boot/* \
+      | /dev/* | /etc/* | /lib/* | /lib64/* | /proc/* | /root/* | /run/* | /sbin/* | /sys/* | /usr/* \
+      | /var/lib/docker/* | /var/log/*)
+      echo "${CLAUDE_TMP_DEFAULT}"
+      return 1
+      ;;
+    *) printf '%s\n' "${path}" ;;
+  esac
+}
+
+# What Claude reads to tell which terminal it is in, passed through from the host's: docker sets only
+# TERM. Without them Claude takes IntelliJ's terminal for an unknown one, so it doesn't link the file
+# paths it prints (see claude_tmp_target), and it falls back on generic behaviour for anything else it
+# looks up by terminal. TERM itself is left as docker sets it: the host's could name a terminfo entry
+# the image doesn't have. An unset one is passed as empty, which Claude reads the same way; `attach`
+# passes them again, so a second shell from another terminal is not taken for the first.
+TERMINAL_ENV=()
+for var in TERMINAL_EMULATOR TERM_PROGRAM TERM_PROGRAM_VERSION COLORTERM; do
+  TERMINAL_ENV+=(-e "${var}=${!var-}")
+done
 
 # ── Image build: base → project → final ───────────────────────────────────────
 # See image/base/Dockerfile for why the image is three layers. Each is an ordinary `docker build`, so
@@ -337,11 +381,14 @@ build() {
 # The files every launch needs in the configuration directory, created when missing:
 #   - .claude-history/ itself: an unprivileged bind mount source must already exist, or the daemon
 #     creates it ROOT-owned. It holds a `*` .gitignore of its own, so it ignores itself in any project
-#     without that project's .gitignore having to know about it.
+#     without that project's .gitignore having to know about it;
+#   - its .sandbox-state/tmp, Claude's temporary directory (see claude_tmp_target), for the same reason;
 #   - .dockerignore keeping .claude-history out of the project image's build context: it holds the
 #     OAuth tokens, and one careless `COPY . ...` would bake them into an image.
 ensure_config() {
   mkdir -p "${CLAUDE_HISTORY_DIR}"
+  # Private, as Claude insists of its temporary directory (it refuses one another user owns).
+  mkdir -p "${CLAUDE_TMP_DIR}" && chmod 700 "${CLAUDE_TMP_DIR}"
   [[ -f "${CLAUDE_HISTORY_DIR}/.gitignore" ]] || printf '*\n' > "${CLAUDE_HISTORY_DIR}/.gitignore"
   if [[ ! -f "${CONFIG_DIR}/.dockerignore" ]]; then
     printf '.claude-history\n' > "${CONFIG_DIR}/.dockerignore"
@@ -523,13 +570,23 @@ run() {
   #     rather than an opaque named volume: Claude's auth, transcripts and memory are visible with a
   #     normal `ls`/`cp`/`tar`, backed up by copying a directory, wiped with `rm -rf`, and inherently
   #     scoped to this one checkout;
+  #   - Claude's temporary directory, CLAUDE_TMP_DIR, at its host path where it can be (claude_tmp_target);
   #   - the project's cache volumes (SANDBOX_CACHE_VOLUMES).
   # Claude derives its per-project history key from the working directory, /work, which is the same in
   # every sandbox - so `continue`/`resume` find the transcripts of earlier launches.
-  local project_mount config_mount history_mount
+  local project_mount config_mount history_mount tmp_mount tmp_target tmp_env=()
   project_mount="$(to_docker_path "${PROJECT_DIR}")"
   config_mount="$(to_docker_path "${CONFIG_DIR}")"
   history_mount="$(to_docker_path "${CLAUDE_HISTORY_DIR}")"
+  tmp_mount="$(to_docker_path "${CLAUDE_TMP_DIR}")"
+  # Absolute (PROJECT_DIR and SANDBOX_CONFIG_DIR may be relative), so it can name a container path.
+  # ensure_config has just created it, so the cd cannot fail.
+  local tmp_host
+  tmp_host="$(cd "${CLAUDE_TMP_DIR}" && pwd)"
+  # shellcheck disable=SC2310  # its status only says whether the target is the image's default
+  if tmp_target="$(claude_tmp_target "${tmp_host}")"; then
+    tmp_env=(-e "CLAUDE_CODE_TMPDIR=${tmp_target}")
+  fi
   docker run "${tty[@]}" --rm \
     --name "${CONTAINER}" \
     --cidfile "${CIDFILE}" \
@@ -541,11 +598,14 @@ run() {
     -e SANDBOX_HISTORY_DAYS="${SANDBOX_HISTORY_DAYS}" \
     -e SANDBOX_REMOTE_CONTROL="${SANDBOX_REMOTE_CONTROL}" \
     -e SANDBOX_REPO_DIR="${REPO_DIR}" \
+    "${TERMINAL_ENV[@]}" \
+    ${tmp_env[@]+"${tmp_env[@]}"} \
     ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
     -v "${project_mount}":/work \
     -v "${config_mount}":/opt/ai-sandbox/config \
     -v "${NAME}-docker":/var/lib/docker \
     -v "${history_mount}":/home/dev/.claude \
+    -v "${tmp_mount}":"${tmp_target}" \
     ${CACHE_MOUNTS[@]+"${CACHE_MOUNTS[@]}"} \
     ${PUBLISH[@]+"${PUBLISH[@]}"} \
     ${RUN_ARGS[@]+"${RUN_ARGS[@]}"} \
@@ -563,7 +623,8 @@ attach() {
   fi
   local tty=()
   if [[ -t 0 ]] && [[ -t 1 ]]; then tty=(-it); else tty=(-i); fi
-  docker exec "${tty[@]}" -u dev -w /work -e HOME=/home/dev -e USER=dev "${CONTAINER}" "${@:-bash}"
+  docker exec "${tty[@]}" -u dev -w /work -e HOME=/home/dev -e USER=dev "${TERMINAL_ENV[@]}" \
+    "${CONTAINER}" "${@:-bash}"
 }
 
 # Reclaim disk inside the NESTED docker daemon - the `-docker` volume, by far the largest (image layers

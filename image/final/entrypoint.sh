@@ -62,6 +62,12 @@ read -ra cache_paths <<< "${SANDBOX_CACHE_PATHS-}"
 for path in /home/dev/.claude ${cache_paths+"${cache_paths[@]}"}; do
   own_mount_point "${path}"
 done
+# Claude's temporary directory (CLAUDE_CODE_TMPDIR, bind-mounted by sandbox.sh): Claude refuses one
+# that is not its user's, and makes it private (0700) itself, so it must be dev's before Claude starts.
+if [[ -n "${CLAUDE_CODE_TMPDIR-}" ]]; then
+  { mkdir -p "${CLAUDE_CODE_TMPDIR}" && chown dev:dev "${CLAUDE_CODE_TMPDIR}" && chmod 700 "${CLAUDE_CODE_TMPDIR}"; } \
+    || echo "[sandbox] WARN: could not hand Claude's temporary directory ${CLAUDE_CODE_TMPDIR} to dev" >&2
+fi
 
 # ── The project's start-up hooks (ai-sandbox-configuration/entrypoint.d/*.sh) ─
 # Run as ROOT, in name order, before anything else: the place for one-off adjustments to this
