@@ -47,7 +47,7 @@
 # ── Toolchain source stage (its payload is copied into the Debian base) ──────
 # Node 26 — installed under /usr/local; the prebuilt binaries are glibc-portable (the -trixie tag
 # matches this base's glibc exactly).
-FROM node:26.13.0-trixie AS node
+FROM node:26.13.1-trixie AS node
 
 # ── Runtime base ─────────────────────────────────────────────────────────────
 FROM debian:13.7
@@ -171,11 +171,11 @@ RUN install -m 0755 -d /etc/apt/keyrings \
 # BEGIN DEBIAN PACKAGES
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -yqq --no-install-recommends \
-        docker-ce="5:29.9.3-1~debian.13~trixie" \
-        docker-ce-cli="5:29.9.3-1~debian.13~trixie" \
-        containerd.io="2.4.2-3~debian.13~trixie" \
-        docker-buildx-plugin="0.38.1-1~debian.13~trixie" \
-        docker-compose-plugin="5.7.0-1~debian.13~trixie"
+        docker-ce="5:29.10.0-1~debian.13~trixie" \
+        docker-ce-cli="5:29.10.0-1~debian.13~trixie" \
+        containerd.io="2.4.2-4~debian.13~trixie" \
+        docker-buildx-plugin="0.39.1-1~debian.13~trixie" \
+        docker-compose-plugin="5.8.0-1~debian.13~trixie"
 # END DEBIAN PACKAGES
 
 # ── Runtime tooling ───────────────────────────────────────────────────────────
@@ -226,7 +226,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,t
         python3="3.13.5-1" \
         python3-pip="25.1.1+dfsg-1" \
         python3-venv="3.13.5-1" \
-        sudo="1.9.16p2-3+deb13u2" \
+        sudo="1.9.16p2-3+deb13u5" \
         tzdata="2026f-0+deb13u1" \
         unzip="6.0-29+deb13u1" \
         vim="2:9.1.1230-2+deb13u2"

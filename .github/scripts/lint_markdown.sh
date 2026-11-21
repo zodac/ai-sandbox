@@ -18,7 +18,7 @@
 # ------------------------------------------------------------------------------
 set -euo pipefail
 
-MARKDOWNLINT_IMAGE="davidanson/markdownlint-cli2:v0.24.1"
+MARKDOWNLINT_IMAGE="davidanson/markdownlint-cli2:v0.24.2"
 MARKDOWNLINT_CONFIG="code-quality-config/markdown/.markdownlint.json"
 
 if [[ ! -f "${MARKDOWNLINT_CONFIG}" ]]; then

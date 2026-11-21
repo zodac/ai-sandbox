@@ -24,7 +24,7 @@ jobs:
       # GITHUB_TOKEN push, its push to master starts the Publish workflow, which tags the release.
       - name: Generate GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v3.3.0
+        uses: actions/create-github-app-token@v3.4.0
         with:
           client-id: ${{ vars.GH_INTEGRATION_APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
