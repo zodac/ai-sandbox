@@ -1354,7 +1354,7 @@ apply_update_content() {
   if (( ADDED + CHANGED == 0 )); then
     echo "[sandbox] no new files; review and commit the moved ${HERE#"${PROJECT_DIR}"/} submodule and any changed settings."
   else
-    echo "[sandbox] ${ADDED} file(s) added, ${CHANGED} run configuration(s) updated or removed; review and commit them with the moved ${HERE#"${PROJECT_DIR}"/} submodule."
+    echo "[sandbox] ${ADDED} file(s) added, ${CHANGED} file(s) updated or removed; review and commit them with the moved ${HERE#"${PROJECT_DIR}"/} submodule."
   fi
 }
 
