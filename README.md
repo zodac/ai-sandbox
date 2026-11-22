@@ -111,7 +111,7 @@ ai-sandbox/sandbox.sh resume           # ... choosing a previous session
 ai-sandbox/sandbox.sh shell            # a bash shell instead
 ai-sandbox/sandbox.sh run <cmd...>     # an arbitrary command (e.g. `run mvn -v`)
 ai-sandbox/sandbox.sh attach [cmd...]  # another shell (or command) in the RUNNING sandbox
-ai-sandbox/sandbox.sh build            # (re)build the image; a launch does this anyway
+ai-sandbox/sandbox.sh build            # (re)build the image; a launch does when anything it is built from changed
 ai-sandbox/sandbox.sh stop             # stop & remove a running sandbox
 ai-sandbox/sandbox.sh prune            # reclaim disk in the nested docker (see Persistence)
 ai-sandbox/sandbox.sh paste-image      # the clipboard's image, for Claude (see Pasting an image)
@@ -121,6 +121,10 @@ ai-sandbox/sandbox.sh update-versions  # bump the version pins in the base + pro
 ai-sandbox/sandbox.sh update-versions --project-only  # ... the project's alone, leaving the submodule clean
 ai-sandbox/sandbox.sh update-versions --project-only --packages-only  # ... its Debian packages alone
 ```
+
+Any other word is refused with this list (from 1.3.0): a typo used to launch, replacing the running
+sandbox. A command for the sandbox goes after `run`. A launch prints where the published ports
+(`SANDBOX_PORTS`) are on the host, and `attach` does too.
 
 `continue` and `resume` are shorthands for `run claude --dangerously-skip-permissions --continue` /
 `--resume`; the long forms still work. The transcripts they resume from live in
@@ -136,16 +140,52 @@ launch to the sessions of earlier launches, which ran in `/work`.
 - **The host Docker socket is NOT mounted.** The sandbox runs its *own* nested Docker daemon, so any
   container a session spins up lives and dies *inside* the sandbox.
 - **Runs as a non-root user** (`dev`, matching your host UID/GID) so files written under `/work` stay
-  owned by you. (Claude also refuses `--dangerously-skip-permissions` as root.)
-- **What `--privileged` actually costs — read this before trusting the list above.** The nested daemon
-  needs it, and it is not free: the container holds `CAP_SYS_ADMIN`, `CAP_SYS_MODULE` and `CAP_MKNOD`,
-  and the host's raw block devices are visible inside it. Root in here can therefore `mount` the host
-  disk and read/write **the entire host filesystem** regardless of what is or is not bind-mounted; and
-  `dev` has passwordless `sudo`. **So: the mount list is a guard against ACCIDENTS - a careless
-  `rm -rf`, a runaway test, an agent with permissions skipped - and a good one. It is NOT a security
-  boundary against deliberately hostile code** (a malicious dependency or build script). Closing that
-  gap means dropping `--privileged` for a runtime built for it, such as
-  [`sysbox-runc`](https://github.com/nestybox/sysbox).
+  owned by you. (Claude also refuses `--dangerously-skip-permissions` as root.) **`dev` has no sudo**
+  unless `SANDBOX_SUDO=true`: root's work (the firewall, opening `SANDBOX_DEVICES` to `dev`) is done by
+  the entrypoint at start, as in Anthropic's reference devcontainer. Install tools in the project's
+  Dockerfile instead (a `sudo` in a session says so).
+- **Not `--privileged`.** The nested daemon gets only what it needs: `CAP_SYS_ADMIN` and `CAP_NET_ADMIN`,
+  seccomp and AppArmor off, and a cgroup namespace of its own; the entrypoint makes this container's
+  cgroup tree and `/proc/sys/net` writable, and nothing else in `/proc/sys`. So no host device is
+  visible but the ones `SANDBOX_DEVICES` names (`--privileged` showed it the raw disks too), and the
+  sandbox cannot load kernel modules, do raw I/O or set the host's clock. `SANDBOX_PRIVILEGED=true` brings
+  `--privileged` back for a project that needs it.
+- **The host's local network is blocked, fail-closed** (`SANDBOX_BLOCK_LOCAL_NETWORK`): new connections from the
+  sandbox, or from its nested containers, to private, link-local (cloud metadata), CGNAT/Tailscale and
+  multicast addresses, and to the Docker gateway (the host itself), are refused. The internet, DNS and
+  the sandbox's own nested containers stay reachable, and `SANDBOX_LOCAL_NETWORK_ALLOW` lets named
+  addresses through. The entrypoint tests the block (by the rules' own counter) and refuses to start the
+  sandbox if it cannot load it or the test fails. **Published ports are on the host's loopback** unless `SANDBOX_PORTS` names an
+  address (`0.0.0.0:8071:8081` to publish to the LAN on purpose).
+- **Limited processes:** `--pids-limit 32768` (`SANDBOX_PIDS_LIMIT`) by default, so a fork bomb or runaway
+  test cannot exhaust the host's process table.
+- **Pinned supply chain:** the base's `FROM` images are pinned by digest as well as tag, and Docker's APT
+  signing key is checked against its published fingerprint before the engine is installed from it.
+- **What this is NOT — read this before trusting the list above.** `CAP_SYS_ADMIN` without a user
+  namespace still leaves root in the sandbox ways out to the host (a fresh `/proc` mount, for one), and
+  root is still within reach: `dev` is in the nested daemon's `docker` group, and a
+  `docker run --privileged` there is root over the sandbox. Root can remove the firewall and unmount the
+  read-only files. **So these are guards against ACCIDENTS - a careless `rm -rf`, a runaway test,
+  an agent with permissions skipped, a prompt-injected session probing the LAN - and good ones. They are
+  NOT a security boundary against deliberately hostile code** (a malicious dependency or build script).
+  Closing that gap means a runtime with user namespaces, such as
+  [`sysbox-runc`](https://github.com/nestybox/sysbox), or a rootless nested daemon with no `sudo`.
+- **Files the HOST runs are read-only in the sandbox** (`SANDBOX_PROTECTED_PATHS`). The project is
+  mounted read-write, but some of it the host runs: the `ai-sandbox` submodule and `sandbox.conf` (sourced
+  by the host's bash) at the next launch, `.git/hooks` (each submodule's too) in the host's git and
+  IntelliJ, `.claude/settings*.json` and `.claude/hooks` in the host's Claude, `.idea/` and `.run/` in
+  IntelliJ, `.vscode/` and `.envrc`. Each of those that exists is mounted read-only over itself. One that
+  doesn't exist yet can still be created, and is reported when the sandbox shuts down. `.git/config`
+  (each submodule's too) stays writable, since ordinary git work writes it (`git submodule init`,
+  `git branch -u`); instead, the settings in it that make git run a program (`core.hooksPath`,
+  `core.fsmonitor`, `core.pager`, filters, aliases, `include.path`, ...) are compared at shutdown, and any
+  the session added or changed is reported. Anything else a person runs on the host later (a build
+  script, a test, `CLAUDE.md`'s instructions to the host's Claude) is still the sandbox's to change:
+  review it as before.
+- **Claude is told about these limits.** The entrypoint writes a managed `CLAUDE.md`
+  (`/etc/claude-code/CLAUDE.md`, which a session cannot change) listing the read-only paths, the missing
+  sudo, the blocked local network and the published ports, so Claude tells you what to change instead
+  of trying ways round them.
 
 ## Independence: one sandbox per checkout
 
@@ -156,7 +196,10 @@ project, never share anything: run as many as you like, each in its own IntelliJ
 thing two sandboxes can still collide on is a published host port, which fails loudly.
 
 **Relaunching the same checkout replaces its running sandbox.** Two copies would share `~/.claude`,
-whose login state Claude rewrites in place, and used to take *both* down. The new launch stops the old
+whose login state Claude rewrites in place, and used to take *both* down. So a launch from a terminal
+(the IntelliJ run configurations included) first asks: **r**eplace it, **a**ttach a shell to it, or
+**c**ancel (the default). A launch with no terminal, or with `SANDBOX_REPLACE=true`, replaces it without
+asking. The new launch stops the old
 container once its own image build is done (so the outgoing session stays usable throughout) and waits
 for the name to free up. Each launcher tears down the container it started **by id**, never by name,
 so a departing session can never stop the one that replaced it. For a second terminal in the same
@@ -206,19 +249,26 @@ Plain bash, sourced on the host before every launch; an environment variable of 
 overrides it (`SANDBOX_PORTS= ai-sandbox/sandbox.sh` publishes nothing, once). A `SANDBOX_*` name the
 file sets that is not listed here gets a warning, since it would otherwise silently do nothing.
 
-| Setting                  | Default        | Meaning                                                                                                                           |
-| ------------------------ | -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `SANDBOX_PORTS`          | *(empty)*      | `host:container` pairs to publish                                                                                                 |
-| `SANDBOX_CACHE_VOLUMES`  | *(empty)*      | `name:/container/path` pairs, each a named volume `<sandbox-name>-<name>` that survives teardown                                  |
-| `SANDBOX_NPM_DIRS`       | *(empty)*      | dirs (relative to the project, `.` = root) to `npm ci` on open, when the lockfile changed; one with no `package.json` warns       |
-| `SANDBOX_ENV`            | *(empty)*      | extra `KEY=VALUE` environment; a bash array for a value with spaces: `("KEY=a b")`                                                |
-| `SANDBOX_BUILD_ARGS`     | *(empty)*      | `KEY=VALUE` build args for the project's Dockerfile, in the same two forms: how it learns anything from outside its build context |
-| `SANDBOX_RUN_ARGS`       | *(empty)*      | extra `docker run` flags, passed through as-is                                                                                    |
-| `SANDBOX_HISTORY_DAYS`   | `14`           | days of Claude session history (transcripts, file history, tool results) to keep; older is deleted at startup                     |
-| `SANDBOX_REMOTE_CONTROL` | `true`         | whether Claude starts its Remote Control bridge with each session                                                                 |
-| `SANDBOX_PASTE_CHANNEL`  | `true`         | whether the running Claude session gets each `paste-image` image by itself                                                        |
-| `SANDBOX_NAME`           | derived        | pin the docker name prefix instead of deriving it from the checkout's path                                                        |
-| `SANDBOX_TZ`             | host's zone    | the sandbox's timezone (IANA name)                                                                                                |
+| Setting                       | Default          | Meaning                                                                                                                           |
+| ----------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `SANDBOX_PORTS`               | *(empty)*        | `host:container` pairs to publish, on the host's loopback unless an entry names its address (`0.0.0.0:host:container`)            |
+| `SANDBOX_CACHE_VOLUMES`       | *(empty)*        | `name:/container/path` pairs, each a named volume `<sandbox-name>-<name>` that survives teardown                                  |
+| `SANDBOX_NPM_DIRS`            | *(empty)*        | dirs (relative to the project, `.` = root) to `npm ci` on open, when the lockfile changed; one with no `package.json` warns       |
+| `SANDBOX_ENV`                 | *(empty)*        | extra `KEY=VALUE` environment; a bash array for a value with spaces: `("KEY=a b")`                                                |
+| `SANDBOX_BUILD_ARGS`          | *(empty)*        | `KEY=VALUE` build args for the project's Dockerfile, in the same two forms: how it learns anything from outside its build context |
+| `SANDBOX_RUN_ARGS`            | *(empty)*        | extra `docker run` flags, passed through as-is                                                                                    |
+| `SANDBOX_HISTORY_DAYS`        | `14`             | days of Claude session history (transcripts, file history, tool results) to keep; older is deleted at startup                     |
+| `SANDBOX_REMOTE_CONTROL`      | `true`           | whether Claude starts its Remote Control bridge with each session                                                                 |
+| `SANDBOX_PASTE_CHANNEL`       | `true`           | whether the running Claude session gets each `paste-image` image by itself                                                        |
+| `SANDBOX_DEVICES`             | *(empty)*        | host devices to pass in (`/dev/kvm`); one the host lacks is skipped with a warning                                                |
+| `SANDBOX_PIDS_LIMIT`          | `32768`          | most processes (threads included) the sandbox may run, nested containers too; `unlimited` turns it off                            |
+| `SANDBOX_BLOCK_LOCAL_NETWORK` | `true`           | refuse connections to the host's LAN, the host and link-local addresses                                                           |
+| `SANDBOX_LOCAL_NETWORK_ALLOW` | *(empty)*        | IP addresses or CIDRs to let through the block                                                                                    |
+| `SANDBOX_SUDO`                | `false`          | give `dev` passwordless sudo                                                                                                      |
+| `SANDBOX_PROTECTED_PATHS`     | the default list | paths (relative to the project) the host runs, mounted read-only; replaces the default list, `""` protects nothing                |
+| `SANDBOX_PRIVILEGED`          | `false`          | run the sandbox `--privileged`, as before 1.3.0 (every host device and capability)                                                |
+| `SANDBOX_NAME`                | derived          | pin the docker name prefix instead of deriving it from the checkout's path                                                        |
+| `SANDBOX_TZ`                  | host's zone      | the sandbox's timezone (IANA name)                                                                                                |
 
 Two more are read from the environment only: `PROJECT_DIR` (default: the submodule's parent) and
 `SANDBOX_CONFIG_DIR` (default: `$PROJECT_DIR/ai-sandbox-configuration`).

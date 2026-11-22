@@ -20,6 +20,9 @@
 #                   digits only in between (26.8.2-trixie -> 26.12.1-trixie; never 27.x, -bookworm,
 #                   -alpine or an -rc/-ea build). A major bump is a manual, reviewed change.
 #                   `FROM ${BASE_IMAGE}` and `FROM <stage>` lines carry no tag, so they are left alone.
+#                   A `FROM image:tag@sha256:...` keeps a digest: it is set to the new tag's, or
+#                   refreshed on its own when the publisher has rebuilt the same tag. A FROM without one
+#                   is not given one.
 #                 - every package in a `# BEGIN DEBIAN PACKAGES` / `# END DEBIAN PACKAGES` block - to
 #                   apt's candidate on the file's (just updated) Debian base, with Docker's APT repo added
 #                   for the engine packages. A Dockerfile with no `FROM debian:` of its own (a project's,
@@ -114,6 +117,18 @@ list_tags() {
     curl -fsSL -H "Authorization: Bearer ${token}" "https://registry-1.docker.io/v2/${repo}/tags/list?n=100000" | jq -r '.tags[]'
 }
 
+# The digest a tag points at now: the manifest list's (multi-platform), so the pin is the same on every
+# host architecture. From the registry's Docker-Content-Digest header, without pulling anything.
+tag_digest() {
+    local repo="${1}" tag="${2}" token
+    [[ "${repo}" == */* ]] || repo="library/${repo}"
+    token=$(curl -fsSL "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull" | jq -r .token)
+    curl -fsSI -H "Authorization: Bearer ${token}" \
+        -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+        "https://registry-1.docker.io/v2/${repo}/manifests/${tag}" \
+        | tr -d '\r' | awk -F': ' 'tolower($1) == "docker-content-digest" { print $2 }' | grep -E '^sha256:[0-9a-f]{64}$'
+}
+
 # Picks the highest version from stdin. A Temurin build number (`_10`) is sorted as `+10`, which
 # ranks it below a newer patch: 26.0.2_10 < 26.0.2.1_1.
 newest() {
@@ -121,11 +136,19 @@ newest() {
 }
 
 update_images() {
-    local dockerfile="$1" image tag version suffix major latest highest images
+    local dockerfile="$1" image tag version suffix major latest highest images digest new_digest pinned
     # `|| true`: a Dockerfile whose every FROM is `${BASE_IMAGE}` or a stage has no tagged image at all.
-    images=$(grep -oP '^FROM\s+\K[^\s:$]+:\S+' "${dockerfile}" | sort -u || true)
+    images=$(grep -oP '^FROM\s+\K[^\s:$@]+:[^\s@]+(@sha256:[0-9a-f]+)?' "${dockerfile}" | sort -u || true)
     while IFS=: read -r image tag; do
         [[ -n "${image}" ]] || continue
+        # image:tag@sha256:<hex> arrives as image / tag@sha256:<hex> (read splits on the first colon only
+        # into `image`; the rest, colons and all, is `tag`).
+        digest=""
+        if [[ "${tag}" == *@sha256:* ]]; then
+            digest="${tag#*@}"
+            tag="${tag%%@*}"
+        fi
+        pinned="${image}:${tag}${digest:+@${digest}}"
         if ! version=$(grep -oE '^[0-9]+([._][0-9]+)*' <<< "${tag}"); then
             echo "  ${image}:${tag} - not a version tag, skipped"
             continue
@@ -135,12 +158,35 @@ update_images() {
         latest=$(list_tags "${image}" | grep -E "^${major}([._][0-9]+)*${suffix//./\\.}\$" | newest || true)
         if [[ -z "${latest}" ]]; then
             warn "${image}:${tag} - no matching tags found, skipped"
-        elif highest=$(printf '%s\n%s\n' "${tag}" "${latest}" | newest) && [[ "${highest}" == "${tag}" ]]; then
-            echo "  ${image}:${tag} (up-to-date)"
-        else
+            continue
+        fi
+        if highest=$(printf '%s\n%s\n' "${tag}" "${latest}" | newest) && [[ "${highest}" == "${tag}" ]]; then
+            latest="${tag}"
+        fi
+        if [[ -z "${digest}" ]]; then
+            if [[ "${latest}" == "${tag}" ]]; then
+                echo "  ${image}:${tag} (up-to-date)"
+                continue
+            fi
             echo "  ${image}: ${tag} → ${latest}"
             sed -i "s|^FROM ${image}:${tag//./\\.}\\b|FROM ${image}:${latest}|" "${dockerfile}"
+            continue
         fi
+        # Digest-pinned: the new tag's digest, or the same tag's current one. Not resolvable → no change
+        # at all, so a tag is never moved without the digest that goes with it.
+        if ! new_digest=$(tag_digest "${image}" "${latest}"); then
+            warn "${image}:${latest} - could not resolve its digest, left at ${tag}"
+            continue
+        fi
+        if [[ "${latest}" == "${tag}" && "${new_digest}" == "${digest}" ]]; then
+            echo "  ${image}:${tag} (up-to-date)"
+            continue
+        elif [[ "${latest}" == "${tag}" ]]; then
+            echo "  ${image}:${tag} - digest refreshed (the tag was rebuilt): ${new_digest}"
+        else
+            echo "  ${image}: ${tag} → ${latest} (${new_digest})"
+        fi
+        sed -i "s|^FROM ${pinned//./\\.}\\b|FROM ${image}:${latest}@${new_digest}|" "${dockerfile}"
     done <<< "${images}"
 }
 

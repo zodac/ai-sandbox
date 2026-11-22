@@ -8,8 +8,8 @@
 # ImageMagick 7, ffmpeg, fonttools, and Playwright's Chromium OS libraries.
 #
 # ── LAYER ORDER IS DELIBERATE: THIS FILE IS OPTIMISED FOR REBUILD TIME ────────
-# sandbox.sh rebuilds the image before EVERY launch, so a cache miss is paid on every session until
-# something else invalidates the layer.
+# sandbox.sh rebuilds the image before a launch whenever anything it is built from changed, so a cache
+# miss is paid on every such launch until something else invalidates the layer.
 #
 # About 10 GB of the image is downloaded content: the emulator and its system image (~6 GB), the NDK
 # (~2.3 GB), the rest of the Android SDK, the JDK and ImageMagick. Each is fetched in a build stage of

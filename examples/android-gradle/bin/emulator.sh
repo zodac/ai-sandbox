@@ -15,9 +15,9 @@
 # Two things here are not obvious, and both are why this script exists rather than a one-line command:
 #
 # - /dev/kvm is root:<the host's kvm gid> inside the container and `dev` isn't in that group, so without
-#   a fix the emulator falls back to software CPU emulation, far too slow to drive an app. The sandbox is
-#   --privileged and `dev` has passwordless sudo, so the device node is opened up (this container's copy
-#   only - the host's is untouched).
+#   a fix the emulator falls back to software CPU emulation, far too slow to drive an app. sandbox.conf
+#   passes it in (SANDBOX_DEVICES), and ai-sandbox's entrypoint opens this container's copy of the node to
+#   `dev` (the host's is untouched); this only checks.
 # - The emulator's software GLES path (gfxstream + SwiftShader) segfaults in its render thread while
 #   drawing DiceFive, silently killing the emulator (exit status 139, no crash report) a few seconds
 #   after the app opens - it shows up as `adb: device offline`. Its Vulkan path doesn't, so the app's UI
@@ -43,18 +43,24 @@ log="${HOME}/.android/emulator-${avd_name}.log"
 is_up() { [[ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]]; }
 
 ensure_kvm() {
-  [[ -e /dev/kvm ]] || { echo "No /dev/kvm: the sandbox host must pass it through (the sandbox runs --privileged)." >&2; exit 1; }
+  [[ -e /dev/kvm ]] || { echo "No /dev/kvm: add SANDBOX_DEVICES=\"/dev/kvm\" to sandbox.conf (on a host that has KVM)." >&2; exit 1; }
   if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
-    echo "[emulator] opening /dev/kvm to this user (this container only)..."
-    sudo chmod 666 /dev/kvm
+    echo "[emulator] /dev/kvm is not read-write for $(id -un) - is it in SANDBOX_DEVICES (ai-sandbox 1.3.0+)?" >&2
+    exit 1
   fi
 }
 
 # The SDK is root-owned in the image, so packages go in through sudo - and the installer, run as root,
-# unpacks them without the other-users read/execute bits the emulator then needs.
+# unpacks them without the other-users read/execute bits the emulator then needs. Only a fallback (the
+# image bakes them in), and it needs SANDBOX_SUDO=true: `dev` has no sudo by default.
 ensure_packages() {
   if [[ -x "${sdk}/emulator/emulator" && -d "${sdk}/system-images/android-${api}/google_apis/x86_64" ]]; then
     return
+  fi
+  if ! sudo -n true 2>/dev/null; then
+    echo "[emulator] the emulator or the API ${api} system image is missing from the image, and installing it" \
+         "needs sudo: rebuild the image with them, or set SANDBOX_SUDO=true in sandbox.conf." >&2
+    exit 1
   fi
   echo "[emulator] installing the emulator and the API ${api} system image (~1.5 GB to download)..."
   # `android sdk install` replaces the deprecated sdkmanager; it asks nothing, so no `yes |`. The

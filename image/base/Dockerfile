@@ -30,6 +30,11 @@
 # (.github/scripts/update_dependency_versions.sh). That script relies on this file's shape: `FROM image:tag` lines and
 # the BEGIN/END DEBIAN PACKAGES markers around each pinned package list.
 #
+# The two images are pinned by DIGEST as well as tag (`FROM image:tag@sha256:...`): a tag can be moved to
+# different content - by the publisher, or by whoever takes over the account - and every sandbox is built
+# FROM these two. The update script refreshes the digest with the tag (and alone, when the publisher
+# rebuilds the same tag), so it is still one bump to review.
+#
 # ── LAYER ORDER ───────────────────────────────────────────────────────────────
 # Ordered from the most stable to the most volatile, so a pin bump rebuilds as little as possible:
 #
@@ -47,10 +52,10 @@
 # ── Toolchain source stage (its payload is copied into the Debian base) ──────
 # Node 26 — installed under /usr/local; the prebuilt binaries are glibc-portable (the -trixie tag
 # matches this base's glibc exactly).
-FROM node:26.13.1-trixie AS node
+FROM node:26.13.1-trixie@sha256:e18c3ccdf7d71619990b0e85639f506e2028a95410999cab24cc373cbd10e0ac AS node
 
 # ── Runtime base ─────────────────────────────────────────────────────────────
-FROM debian:13.7
+FROM debian:13.7@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
 
 # pipefail for every RUN in this stage so a failure in the middle of a `getent … | cut` pipe (or any
 # other) aborts the layer instead of being masked by the pipe's last command (debian base has bash).
@@ -114,7 +119,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,t
         libatomic1="14.2.0-19"
 # END DEBIAN PACKAGES
 
-# ── Non-root user `dev` matching the host UID/GID, with passwordless sudo ────
+# ── Non-root user `dev` matching the host UID/GID ────────────────────────────
 # The Debian base ships no user at ${UID}/${GID}, so this normally just creates `dev`. The getent
 # guards keep it robust if a base ever does pre-populate the UID/GID: rename whatever owns them to
 # `dev` and point its home at /home/dev.
@@ -126,8 +131,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,t
 # The `docker` group is created here rather than by the docker-ce package below (whose install reuses
 # an existing group), so this block does not have to wait for it.
 #
-# /etc/sudoers.d is created explicitly rather than relying on the `sudo` package — sudo installs in
-# the tooling block BELOW this one, so the directory would not otherwise exist yet.
+# NO sudo rule for `dev`: the entrypoint writes one at start only when the project sets
+# SANDBOX_SUDO=true (see image/final/entrypoint.sh for why it is off by default). /etc/sudoers.d is
+# created explicitly for it rather than relying on the `sudo` package, which installs below.
 #
 # Cache directories (~/.m2, ~/.gradle, ...) are NOT pre-created here: which ones a project mounts is
 # its own choice (SANDBOX_CACHE_VOLUMES), and entrypoint.sh hands every mount point to `dev` at start.
@@ -143,9 +149,7 @@ RUN set -eux; \
     fi; \
     getent group docker >/dev/null || groupadd -r docker; \
     usermod -aG docker dev; \
-    install -d -m 0755 /etc/sudoers.d; \
-    echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev; \
-    chmod 0440 /etc/sudoers.d/dev
+    install -d -m 0755 /etc/sudoers.d
 
 # ── Nested daemon config: keep the build cache from growing without limit ────
 # The `-docker` volume (/var/lib/docker) is by far the largest of a sandbox's volumes - every nested
@@ -161,8 +165,19 @@ COPY daemon.json /etc/docker/daemon.json
 # The base is pinned to Debian, so the repo distro is hardcoded as `debian`; only the release codename
 # is derived (from /etc/os-release, via sed rather than a sourced shell var) so a base point/major
 # bump follows automatically.
+#
+# The signing key is checked against Docker's published fingerprint before it is trusted
+# (https://docs.docker.com/engine/install/debian/): TLS alone means only that the key came from
+# download.docker.com, and everything apt installs from that repo - the engine that runs as root in
+# every sandbox - is trusted on its say-so. A different key fails the build. If Docker ever rotates it,
+# their install page has the new fingerprint.
+ARG DOCKER_APT_KEY_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 RUN install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && fingerprint="$(gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc | awk -F: '/^fpr/ { print $10; exit }')" \
+    && if [ "${fingerprint}" != "${DOCKER_APT_KEY_FINGERPRINT}" ]; then \
+         echo "Docker's APT signing key has fingerprint '${fingerprint}', not ${DOCKER_APT_KEY_FINGERPRINT}" >&2; exit 1; \
+       fi \
     && chmod a+r /etc/apt/keyrings/docker.asc \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(sed -n 's/^VERSION_CODENAME=//p' /etc/os-release) stable" \
          > /etc/apt/sources.list.d/docker.list
@@ -196,7 +211,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,t
 # procps (`ps`, `pgrep`, `pkill`) finds and clears a stray process, which is routine after an interrupted
 #   build or test run; less is the pager git and most CLIs expect in an interactive shell.
 #
-# sudo provides the runtime `sudo` binary; /etc/sudoers.d/dev is already written above.
+# sudo provides the `sudo` binary, for SANDBOX_SUDO=true (the entrypoint writes the rule then).
 #
 # unzip: needed often enough by sessions (and by project scripts) to be worth carrying everywhere.
 #

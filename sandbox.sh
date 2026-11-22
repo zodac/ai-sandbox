@@ -25,7 +25,8 @@
 #
 # A launch REPLACES any sandbox of the SAME project checkout that is already running (they cannot
 # coexist — same name, same ports, same ~/.claude bind mount), stopping it only once the new image has
-# been built. Every docker name is derived from the project directory's path (see SLUG below), so a
+# been built. From a terminal it asks first: replace, attach a shell instead, or cancel (see
+# confirm_replace). Every docker name is derived from the project directory's path (see SLUG below), so a
 # DIFFERENT project or checkout — another IntelliJ window — shares none of that state.
 #
 # Only the project directory is mounted from the host. No $HOME, no SSH keys, no other projects, and
@@ -80,7 +81,9 @@ fi
 # otherwise silently do nothing, so it warns. Names already in the environment are left out of that:
 # SANDBOX_CONFIG_DIR is one, and they are not the file's doing.
 SETTINGS=(SANDBOX_NAME SANDBOX_PORTS SANDBOX_CACHE_VOLUMES SANDBOX_NPM_DIRS SANDBOX_ENV SANDBOX_BUILD_ARGS
-          SANDBOX_RUN_ARGS SANDBOX_TZ SANDBOX_HISTORY_DAYS SANDBOX_REMOTE_CONTROL SANDBOX_PASTE_CHANNEL)
+          SANDBOX_RUN_ARGS SANDBOX_TZ SANDBOX_HISTORY_DAYS SANDBOX_REMOTE_CONTROL SANDBOX_PASTE_CHANNEL
+          SANDBOX_DEVICES SANDBOX_PIDS_LIMIT SANDBOX_BLOCK_LOCAL_NETWORK SANDBOX_LOCAL_NETWORK_ALLOW
+          SANDBOX_PRIVILEGED SANDBOX_SUDO SANDBOX_PROTECTED_PATHS)
 declare -A FROM_ENV=()
 for setting in "${SETTINGS[@]}"; do
   if [[ -n "${!setting+set}" ]]; then FROM_ENV["${setting}"]="${!setting}"; fi
@@ -145,9 +148,21 @@ CLAUDE_TMP_DIR="${CLAUDE_HISTORY_DIR}/.sandbox-state/tmp"
 # Ports published to the HOST, space-separated `host:container` pairs - the one resource two sandboxes
 # can still collide on (two cannot both hold the same host port). Unlike the names it fails LOUDLY
 # ("port is already allocated"), so it is a setting rather than a derivation. Default: nothing.
+# Published on the host's LOOPBACK unless the entry names an address: Docker's own default is every
+# interface, which put a session's dev server (and whatever it serves - the project, a debug endpoint)
+# on the LAN. `host:container` → 127.0.0.1:host:container, a bare `container` → 127.0.0.1::container
+# (a random host port); an entry with an address of its own (`0.0.0.0:8071:8081`, `[::1]:8071:8081`)
+# is passed as it is - that is how to publish to the LAN on purpose.
 read -ra PUBLISH_PORTS <<< "${SANDBOX_PORTS-}"
 PUBLISH=()
-for port in ${PUBLISH_PORTS+"${PUBLISH_PORTS[@]}"}; do PUBLISH+=(-p "${port}"); done
+for port in ${PUBLISH_PORTS+"${PUBLISH_PORTS[@]}"}; do
+  colons="${port//[^:]/}"
+  if [[ "${port}" == \[* ]]; then PUBLISH+=(-p "${port}")
+  elif [[ "${#colons}" -eq 0 ]]; then PUBLISH+=(-p "127.0.0.1::${port}")
+  elif [[ "${#colons}" -eq 1 ]]; then PUBLISH+=(-p "127.0.0.1:${port}")
+  else PUBLISH+=(-p "${port}")
+  fi
+done
 
 # Named cache volumes, space-separated `name:/container/path` pairs, each mounted as
 # `<NAME>-<name>` (e.g. "m2:/home/dev/.m2 gradle:/home/dev/.gradle"). Without one a cache lives in the
@@ -190,6 +205,150 @@ if [[ "${SANDBOX_REMOTE_CONTROL}" != "true" && "${SANDBOX_REMOTE_CONTROL}" != "f
   echo "[sandbox] SANDBOX_REMOTE_CONTROL must be true or false, not '${SANDBOX_REMOTE_CONTROL}'" >&2
   exit 1
 fi
+
+# ── Isolation from the host ──────────────────────────────────────────────────
+# The nested dockerd used to get it all with --privileged: every capability, AppArmor and seccomp off,
+# AND every host device - the raw disks among them, so root in the sandbox could mount the host's
+# filesystem whatever was or wasn't bind-mounted, load kernel modules, or write the host's clock. It
+# needs much less: CAP_SYS_ADMIN (mounts: overlayfs, its containers' /proc) and CAP_NET_ADMIN (their
+# networks), seccomp and AppArmor off (Docker's default profiles refuse those mounts, and runc's own
+# setup), and a cgroup namespace of its own, so /sys/fs/cgroup is this container's subtree, which
+# entrypoint.sh makes writable along with /proc/sys/net (and nothing else in /proc/sys). That leaves
+# out every device but the default few, and CAP_SYS_MODULE, CAP_SYS_RAWIO, CAP_SYS_TIME, CAP_SYS_BOOT
+# and the rest of --privileged's extras.
+#
+# It is still NOT a boundary against hostile code: CAP_SYS_ADMIN without a user namespace leaves root in
+# the sandbox ways out (and `dev` has sudo, and the nested daemon's socket). See the README.
+# SANDBOX_PRIVILEGED=true brings --privileged back, for a project whose tooling needs what this leaves
+# out (a device of every kind, a kernel module): a deliberate, visible choice.
+SANDBOX_PRIVILEGED="${SANDBOX_PRIVILEGED:-false}"
+if [[ "${SANDBOX_PRIVILEGED}" != "true" && "${SANDBOX_PRIVILEGED}" != "false" ]]; then
+  echo "[sandbox] SANDBOX_PRIVILEGED must be true or false, not '${SANDBOX_PRIVILEGED}'" >&2
+  exit 1
+fi
+if [[ "${SANDBOX_PRIVILEGED}" == "true" ]]; then
+  ISOLATION_ARGS=(--privileged)
+else
+  ISOLATION_ARGS=(--cap-add SYS_ADMIN --cap-add NET_ADMIN
+                  --security-opt seccomp=unconfined --security-opt apparmor=unconfined --cgroupns private)
+fi
+
+# Host devices handed in, space-separated paths ("/dev/kvm" for an Android emulator) - --privileged used to
+# hand in every one. A path the host does not have is skipped with a warning rather than failing the
+# launch (docker refuses a missing --device), so a configuration that names /dev/kvm still opens on a
+# host without KVM (a Mac); only the tool that needs it then fails. Ignored with SANDBOX_PRIVILEGED.
+read -ra DEVICES <<< "${SANDBOX_DEVICES-}"
+DEVICE_ARGS=()
+DEVICE_PATHS=()  # the ones passed in, for entrypoint.sh to open to `dev` (who has no sudo to chmod them)
+for device in ${DEVICES+"${DEVICES[@]}"}; do
+  if [[ "${device}" != /dev/* ]]; then
+    echo "[sandbox] SANDBOX_DEVICES entry '${device}' is not a /dev path" >&2
+    exit 1
+  elif [[ -e "${device}" ]]; then
+    DEVICE_ARGS+=(--device "${device}")
+    DEVICE_PATHS+=("${device}")
+  else
+    echo "[sandbox] WARN: SANDBOX_DEVICES names ${device}, which this host does not have - not passed in" >&2
+  fi
+done
+
+# The most processes (threads included) the sandbox may run at once, nested containers included: a fork
+# bomb or a runaway test otherwise exhausts the HOST's process table. High enough for a Gradle daemon,
+# an emulator and a stack of nested containers; `unlimited` turns it off. (Memory and CPU stay
+# unlimited by default, as an emulator or a big build needs them: `--memory 16g` in SANDBOX_RUN_ARGS.)
+# Whether `dev` gets passwordless sudo (entrypoint.sh writes the rule at start). Off by default: a
+# session with sudo can undo the firewall and the read-only mounts below as root. A tool missing from the
+# image belongs in the project's Dockerfile (pinned), not in a `sudo apt-get install` that the next
+# launch forgets anyway.
+SANDBOX_SUDO="${SANDBOX_SUDO:-false}"
+if [[ "${SANDBOX_SUDO}" != "true" && "${SANDBOX_SUDO}" != "false" ]]; then
+  echo "[sandbox] SANDBOX_SUDO must be true or false, not '${SANDBOX_SUDO}'" >&2
+  exit 1
+fi
+
+# ── Files the HOST runs, read-only in the sandbox ────────────────────────────
+# The project is mounted read-write, and some of it is not just data: the host RUNS it, outside any
+# sandbox. ai-sandbox/sandbox.sh and sandbox.conf (sourced by the host's bash: one SANDBOX_RUN_ARGS edit
+# mounts the host's /) at the next launch; .git/hooks in the host's git; .claude/settings*.json and the
+# hooks they name in the host's Claude; .run/ and .idea/ in IntelliJ; .vscode/ tasks; .envrc in direnv.
+# A prompt-injected session that edits one has a way out of the sandbox without breaking anything. So
+# each of those that exists is mounted READ-ONLY over itself (at /work and at the host path), and one
+# that doesn't exist yet is reported at teardown if the session created it (report_created_host_files).
+#
+# .git/config is NOT on the list, though its core.fsmonitor, core.pager and filters run programs in the
+# host's git (IntelliJ's own `git status` within seconds): read-only, it broke ordinary git work in the
+# sandbox - `git submodule init`, `git branch -u`, `git remote add`, `git config --local`. Instead the keys
+# that make git run something are compared at teardown, and any the session added or changed is reported
+# (report_risky_git_config).
+#
+# SANDBOX_PROTECTED_PATHS, paths relative to the project, replaces the list (empty protects nothing).
+# The submodule is left out when this repo runs its own working tree (self_hosted), where it is the
+# whole project; ai-sandbox's own sandbox.conf lists what it protects.
+#
+# A guard, not a boundary (root in the sandbox can unmount them: see SANDBOX_SUDO); and it covers the
+# host's TOOLS, not what a person may later run by hand (a build script, a test) - review those as before.
+default_protected_paths() {
+  local rel="${HERE#"${PROJECT_DIR}"/}" config_rel="${CONFIG_DIR#"${PROJECT_DIR}"/}" path
+  [[ "${HERE}" == "${PROJECT_DIR}" || "${rel}" == /* ]] || printf '%s\n' "${rel}"
+  [[ "${config_rel}" == /* ]] || printf '%s\n' "${config_rel}/sandbox.conf"
+  printf '%s\n' .git/hooks .claude/settings.json .claude/settings.local.json .claude/hooks \
+    .idea .run .vscode .envrc
+  # Each submodule's own hooks (.git/modules/<name>/hooks, nested ones below that).
+  if [[ -d "${PROJECT_DIR}/.git/modules" ]]; then
+    find "${PROJECT_DIR}/.git/modules" -maxdepth 6 -name hooks -type d -prune -print \
+      2>/dev/null | while IFS= read -r path; do printf '%s\n' "${path#"${PROJECT_DIR}"/}"; done
+  fi
+}
+if [[ -n "${SANDBOX_PROTECTED_PATHS+set}" ]]; then
+  read -ra PROTECTED_PATHS <<< "${SANDBOX_PROTECTED_PATHS}"
+else
+  PROTECTED_PATHS=()
+  defaults="$(default_protected_paths)"
+  [[ -z "${defaults}" ]] || mapfile -t PROTECTED_PATHS <<< "${defaults}"
+fi
+for path in ${PROTECTED_PATHS+"${PROTECTED_PATHS[@]}"}; do
+  if [[ "${path}" == /* || "/${path}/" == */../* || -z "${path}" ]]; then
+    echo "[sandbox] SANDBOX_PROTECTED_PATHS entry '${path}' must be a path inside the project, relative to it" >&2
+    exit 1
+  fi
+done
+
+SANDBOX_PIDS_LIMIT="${SANDBOX_PIDS_LIMIT:-32768}"
+if [[ "${SANDBOX_PIDS_LIMIT}" == "unlimited" ]]; then
+  PIDS_ARGS=()
+elif [[ "${SANDBOX_PIDS_LIMIT}" =~ ^[1-9][0-9]*$ ]]; then
+  PIDS_ARGS=(--pids-limit "${SANDBOX_PIDS_LIMIT}")
+else
+  echo "[sandbox] SANDBOX_PIDS_LIMIT must be a whole number or 'unlimited', not '${SANDBOX_PIDS_LIMIT}'" >&2
+  exit 1
+fi
+
+# Whether the sandbox is kept off the host's local network: the LAN, the host itself and link-local
+# addresses (entrypoint.sh's block_local_network has the details). On by default; addresses or CIDRs in
+# SANDBOX_LOCAL_NETWORK_ALLOW stay reachable. Checked here so a typo fails the launch rather than the
+# rules.
+SANDBOX_BLOCK_LOCAL_NETWORK="${SANDBOX_BLOCK_LOCAL_NETWORK:-true}"
+if [[ "${SANDBOX_BLOCK_LOCAL_NETWORK}" != "true" && "${SANDBOX_BLOCK_LOCAL_NETWORK}" != "false" ]]; then
+  echo "[sandbox] SANDBOX_BLOCK_LOCAL_NETWORK must be true or false, not '${SANDBOX_BLOCK_LOCAL_NETWORK}'" >&2
+  exit 1
+fi
+# The host's network namespace is refused outright. With it (and CAP_NET_ADMIN), the nested dockerd
+# configures the HOST's networking as its own: on 2026-11-22 a test launch re-addressed the host's docker0
+# to the nested daemon's default 172.17.0.1/16 and rewrote its NAT rule, cutting every container on the
+# host's default bridge - another project's live sandbox among them - off the network. The block above
+# would be the host's firewall, too. Publish ports (SANDBOX_PORTS) instead.
+if [[ " ${RUN_ARGS[*]-} " =~ [[:space:]]--net(work)?(=|[[:space:]]+)host[[:space:]] ]]; then
+  echo "[sandbox] SANDBOX_RUN_ARGS must not use the host's network (--network host): the nested Docker" \
+       "daemon would reconfigure the host's own Docker networking. Publish ports with SANDBOX_PORTS instead." >&2
+  exit 1
+fi
+read -ra LOCAL_NETWORK_ALLOW <<< "${SANDBOX_LOCAL_NETWORK_ALLOW-}"
+for address in ${LOCAL_NETWORK_ALLOW+"${LOCAL_NETWORK_ALLOW[@]}"}; do
+  if [[ ! "${address}" =~ ^([0-9]{1,3}(\.[0-9]{1,3}){3}|[0-9a-fA-F:]*:[0-9a-fA-F:.]*)(/[0-9]{1,3})?$ ]]; then
+    echo "[sandbox] SANDBOX_LOCAL_NETWORK_ALLOW entry '${address}' is not an IP address or CIDR" >&2
+    exit 1
+  fi
+done
 
 # Whether Claude loads the paste-image channel (launch.sh), which hands it each image `paste-image` saves
 # without a Ctrl+V. On by default.
@@ -342,11 +501,49 @@ base_image() {
   printf 'ai-sandbox-base:%08x' "${hash}"
 }
 
-build() {
-  local uid gid base from claude_arg=() baked context
+# What the image is built from, as one checksum: the base's tag (itself a hash of image/base), the
+# project's configuration directory (its Dockerfile's build context, less .claude-history), its build args,
+# image/final, the Claude Code version and the UID/GID. The final image carries it as a label, so a launch
+# whose inputs are all unchanged skips `docker build` - three builds' worth of cache checks and their
+# output, most of a no-change relaunch's time. What the build cache would not notice either (a moved
+# `FROM` tag upstream, an unpinned download) is not noticed here; `sandbox.sh build` always builds.
+BUILD_KEY_LABEL='net.zodac.sandbox.build-key'
+tree_hash() {  # <directory> [<path inside it to leave out>]
+  local dir="$1" skip="${2:-}"
+  (cd "${dir}" && find . \( -path "./${skip:-/}" -prune \) -o -type f -print | LC_ALL=C sort \
+     | while IFS= read -r file; do printf '%s\n' "${file}"; cat "${file}"; done) | cksum | cut -d' ' -f1
+}
+build_key() {  # <Claude Code version>
+  local history_rel="${CLAUDE_HISTORY_DIR#"${CONFIG_DIR}"/}" base final uid gid inputs
+  base="$(base_image)"
+  final="$(tree_hash "${HERE}/image/final")"
+  uid="$(id -u)"
+  gid="$(id -g)"
+  inputs="base ${base}"$'\n'"final ${final}"$'\n'"claude $1"$'\n'"uid ${uid}"$'\n'"gid ${gid}"
+  if [[ -f "${CONFIG_DIR}/Dockerfile" ]]; then
+    inputs+=$'\n'"project $(tree_hash "${CONFIG_DIR}" "${history_rel}")"$'\n'"args ${BUILD_ARGS[*]-}"
+  fi
+  printf '%s\n' "${inputs}" | cksum | cut -d' ' -f1
+}
+
+build() {  # [--if-changed]: skip the build when the image's inputs are unchanged (a launch)
+  local uid gid base from claude_arg=() baked context version key
   uid="$(id -u)"
   gid="$(id -g)"
   base="$(base_image)"
+
+  # The Claude Code version to bake in: the newest release, or (offline) the one the image has.
+  resolve_claude_version
+  baked="$(docker image inspect -f "{{ index .Config.Labels \"${CLAUDE_VERSION_LABEL}\" }}" "${IMAGE}" 2>/dev/null || true)"
+  [[ "${baked}" != "<no value>" ]] || baked=""
+  version="${CLAUDE_VERSION:-${baked}}"
+  key="$(build_key "${version}")"
+  if [[ "${1:-}" == "--if-changed" ]] \
+     && [[ "$(docker image inspect -f "{{ index .Config.Labels \"${BUILD_KEY_LABEL}\" }}" "${IMAGE}" 2>/dev/null || true)" == "${key}" ]]; then
+    echo "[sandbox] image ${IMAGE} is up to date (Claude Code ${version:-unknown})" >&2
+    return 0
+  fi
+  [[ "${1:-}" != "--if-changed" ]] || echo "[sandbox] building ${IMAGE} before launch..." >&2
 
   # 1. The shared base.
   if docker image inspect "${base}" >/dev/null 2>&1; then
@@ -375,13 +572,11 @@ build() {
   fi
 
   # 3. Claude Code + the sandbox scripts.
-  resolve_claude_version
   if [[ -n "${CLAUDE_VERSION}" ]]; then
     echo "[sandbox] baking Claude Code ${CLAUDE_VERSION} into the image" >&2
     claude_arg=(--build-arg CLAUDE_CODE_VERSION="${CLAUDE_VERSION}")
   else
-    baked="$(docker image inspect -f "{{ index .Config.Labels \"${CLAUDE_VERSION_LABEL}\" }}" "${IMAGE}" 2>/dev/null || true)"
-    if [[ -n "${baked}" && "${baked}" != "<no value>" ]]; then
+    if [[ -n "${baked}" ]]; then
       echo "[sandbox] WARN: could not reach the npm registry - keeping the image's Claude Code ${baked}" >&2
       claude_arg=(--build-arg CLAUDE_CODE_VERSION="${baked}")
     else
@@ -394,6 +589,7 @@ build() {
     --build-arg UID="${uid}" \
     --build-arg GID="${gid}" \
     ${claude_arg[@]+"${claude_arg[@]}"} \
+    --label "${BUILD_KEY_LABEL}=${key}" \
     "${context}"
 }
 
@@ -406,6 +602,9 @@ build() {
 #     OAuth tokens, and one careless `COPY . ...` would bake them into an image.
 ensure_config() {
   mkdir -p "${CLAUDE_HISTORY_DIR}"
+  # Private to the host user: it holds Claude's OAuth tokens and every transcript (and nothing in it is
+  # anyone else's to read). Re-applied each launch, as it was created group-writable before 1.3.0.
+  chmod 700 "${CLAUDE_HISTORY_DIR}"
   # Private, as Claude insists of its temporary directory (it refuses one another user owns).
   mkdir -p "${CLAUDE_TMP_DIR}" && chmod 700 "${CLAUDE_TMP_DIR}"
   [[ -f "${CLAUDE_HISTORY_DIR}/.gitignore" ]] || printf '*\n' > "${CLAUDE_HISTORY_DIR}/.gitignore"
@@ -478,6 +677,36 @@ export_git_config() {
 # session stays usable for the whole rebuild and the gap between the two is only the teardown itself.
 # (`attach` is the way to get a second terminal into the same sandbox.)
 REMOVED_EXISTING=0
+# A launch replaces this checkout's running sandbox (remove_existing), ending any session in it - which,
+# unasked, has cost a live session (2026-11-14). So where someone can answer (a terminal: IntelliJ's run
+# configurations run in one), ask: replace it, open a shell in it instead (attach), or cancel - the
+# default, so a stray Enter loses nothing. A launch with no terminal (a script) replaces it as before, and
+# so does SANDBOX_REPLACE=true.
+confirm_replace() {
+  local answer status running
+  running="$(docker ps -q -f "name=^${CONTAINER}$" 2>/dev/null)" || running=""
+  [[ -n "${running}" ]] || return 0
+  if [[ "${SANDBOX_REPLACE:-}" == "true" ]] || ! [[ -t 0 && -t 1 ]]; then
+    return 0
+  fi
+  echo "[sandbox] ${CONTAINER} is already running: a new launch replaces it, ending the session in it." >&2
+  while true; do
+    read -r -p "[sandbox] [r]eplace it, [a]ttach a shell to it, or [c]ancel? [c] " answer || answer=c
+    case "${answer,,}" in
+      r|replace) return 0 ;;
+      a|attach)
+        status=0
+        # shellcheck disable=SC2310  # its status is passed on as this launch's
+        attach || status=$?
+        exit "${status}" ;;
+      ""|c|cancel)
+        echo "[sandbox] cancelled - the running sandbox is untouched" >&2
+        exit 0 ;;
+      *) echo "[sandbox] answer r, a or c" >&2 ;;
+    esac
+  done
+}
+
 remove_existing() {
   local existing waited=0
   REMOVED_EXISTING=0
@@ -544,6 +773,8 @@ stop_own() {
   local cidfile="$1" cid=""
   # First, before the (up to 10s) `docker stop`: IntelliJ may SIGKILL the launcher during that grace.
   remove_scratch_run_configs
+  report_created_host_files
+  report_risky_git_config
   if [[ -z "${cidfile}" ]]; then
     return 0
   fi
@@ -556,6 +787,61 @@ stop_own() {
   rm -f "${cidfile}"
 }
 
+# The protected paths (above) that did not exist at launch, so could not be mounted read-only: any of
+# them the session created is reported at teardown, as it runs on the host as much as an edited one would.
+# Best effort - a launcher SIGKILLed before its trap runs reports nothing.
+UNPROTECTED_MISSING=()
+report_created_host_files() {
+  local path created=()
+  for path in ${UNPROTECTED_MISSING+"${UNPROTECTED_MISSING[@]}"}; do
+    [[ -e "${PROJECT_DIR}/${path}" || -L "${PROJECT_DIR}/${path}" ]] && created+=("${path}")
+  done
+  UNPROTECTED_MISSING=()
+  [[ "${#created[@]}" -gt 0 ]] || return 0
+  echo "[sandbox] WARN: the sandbox CREATED files that tools on the host run or load - review them before" \
+       "you use git, IntelliJ or Claude on the host: ${created[*]}" >&2
+}
+
+# The git settings that make the HOST's git run a program, or read settings from another file: the
+# project's .git/config and every submodule's (.git/modules/**/config), which stay writable in the sandbox
+# (see SANDBOX_PROTECTED_PATHS). run() records them at launch, and teardown reports each one the session
+# added or changed, before IntelliJ's next `git status` runs it. Keys are matched as `git config --list`
+# prints them: section and name lower-cased, a subsection as written.
+RISKY_GIT_KEYS='^(core\.(hookspath|fsmonitor|sshcommand|pager|editor|askpass|gitproxy|worktree|alternaterefscommand)'
+RISKY_GIT_KEYS+='|sequence\.editor|include\.path|includeif\..*\.path|alias\..*|pager\..*|interactive\.difffilter'
+RISKY_GIT_KEYS+='|filter\..*\.(clean|smudge|process)|diff\.external|diff\..*\.(textconv|command)|merge\..*\.driver'
+RISKY_GIT_KEYS+='|credential\.(.*\.)?helper|gpg\.(.*\.)?program|submodule\..*\.update|uploadpack\..*|protocol\..*'
+RISKY_GIT_KEYS+='|remote\..*\.(uploadpack|receivepack|proxy)|http\.(.*\.)?proxy|ssh\.variant)='
+risky_git_config() {
+  local file
+  command -v git >/dev/null 2>&1 || return 0
+  {
+    if [[ -f "${PROJECT_DIR}/.git/config" ]]; then printf '%s\n' "${PROJECT_DIR}/.git/config"; fi
+    if [[ -d "${PROJECT_DIR}/.git/modules" ]]; then
+      find "${PROJECT_DIR}/.git/modules" -maxdepth 6 -name config -type f 2>/dev/null || true
+    fi
+  } | LC_ALL=C sort | while IFS= read -r file; do
+    git config --file "${file}" --list 2>/dev/null | grep -E "${RISKY_GIT_KEYS}" \
+      | sed "s|^|${file#"${PROJECT_DIR}"/}: |" || true
+  done
+}
+RISKY_GIT_BEFORE=""
+RISKY_GIT_RECORDED=0
+report_risky_git_config() {
+  local after added
+  [[ "${RISKY_GIT_RECORDED}" -eq 1 ]] || return 0
+  RISKY_GIT_RECORDED=0
+  # shellcheck disable=SC2310  # best effort: no reading is no report
+  after="$(risky_git_config)" || after=""
+  # The lines in `after` that `before` doesn't have (both are sorted by risky_git_config's own order).
+  added="$(grep -vxF -f <(printf '%s\n' "${RISKY_GIT_BEFORE}") <<< "${after}" | grep -v '^$')" || added=""
+  [[ -n "${added}" ]] || return 0
+  echo "[sandbox] WARN: the sandbox ADDED or CHANGED git settings that make git on the host run a program." \
+       "Review them (git config --file <file> --unset <key> removes one) before you use git or IntelliJ" \
+       "on the host:" >&2
+  printf '%s\n' "${added}" | sed 's/^/[sandbox]     /' >&2
+}
+
 run() {
   if [[ ! -d "${PROJECT_DIR}" ]]; then
     echo "Project directory not found: ${PROJECT_DIR}" >&2
@@ -564,10 +850,12 @@ run() {
   ensure_config
   export_git_config
 
-  # Always (re)build before launching so every session runs the latest image. Docker's layer
-  # cache makes this a near-instant no-op when nothing in the build context has changed.
-  echo "[sandbox] building ${IMAGE} before launch..." >&2
-  build
+  # A running sandbox of this checkout would be replaced: ask first, where someone can answer.
+  confirm_replace
+
+  # (Re)build before launching so every session runs the latest image - unless nothing it is built
+  # from has changed (build_key), when even Docker's cache checks are skipped.
+  build --if-changed
 
   # Only now (image ready, downtime minimised) take the name off any sandbox that is already running.
   remove_existing
@@ -601,6 +889,10 @@ run() {
   exec 3<&0
   trap 'stop_own "${CIDFILE}"' EXIT
   trap 'exit' INT TERM HUP
+  # The git settings that run programs on the host, to compare at teardown (report_risky_git_config).
+  # shellcheck disable=SC2310  # best effort, as at teardown
+  RISKY_GIT_BEFORE="$(risky_git_config)" || RISKY_GIT_BEFORE=""
+  RISKY_GIT_RECORDED=1
 
   # The mounts:
   #   - the project at /work (its configuration directory included, wherever it is inside it);
@@ -617,7 +909,7 @@ run() {
   # Claude derives its per-project history key from its working directory: the host path where it can
   # be (launch.sh links that key to the sessions of earlier launches), else /work.
   local project_mount config_mount history_mount tmp_mount tmp_host tmp_target project_host
-  local tmp_env=() mirror_mounts=() workdir_env=()
+  local tmp_env=() mirror_mounts=() workdir_env=() protect_mounts=() protected=() path source client
   project_mount="$(to_docker_path "${PROJECT_DIR}")"
   config_mount="$(to_docker_path "${CONFIG_DIR}")"
   history_mount="$(to_docker_path "${CLAUDE_HISTORY_DIR}")"
@@ -631,6 +923,25 @@ run() {
     mirror_mounts+=(-v "${project_mount}:${project_host}")
     workdir_env=(-e "SANDBOX_WORKDIR=${project_host}")
   fi
+  # The files the host runs, read-only over themselves wherever the project is mounted (see
+  # SANDBOX_PROTECTED_PATHS). A symlink is left alone: docker would mount whatever it points at, and the
+  # target, inside the container, may not be the file it names on the host.
+  for path in ${PROTECTED_PATHS+"${PROTECTED_PATHS[@]}"}; do
+    if [[ -L "${PROJECT_DIR}/${path}" ]]; then
+      continue
+    elif [[ ! -e "${PROJECT_DIR}/${path}" ]]; then
+      UNPROTECTED_MISSING+=("${path}")
+      continue
+    fi
+    source="$(to_docker_path "${PROJECT_DIR}/${path}")"
+    protected+=("${path}")
+    protect_mounts+=(-v "${source}:/work/${path}:ro")
+    [[ "${#workdir_env[@]}" -eq 0 ]] || protect_mounts+=(-v "${source}:${project_host}/${path}:ro")
+  done
+  # sandbox.conf at the configuration's fixed mount point too (whether or not the list names it there).
+  if [[ -f "${CONFIG_DIR}/sandbox.conf" && ! -L "${CONFIG_DIR}/sandbox.conf" ]]; then
+    protect_mounts+=(-v "$(to_docker_path "${CONFIG_DIR}/sandbox.conf"):/opt/ai-sandbox/config/sandbox.conf:ro")
+  fi
   # shellcheck disable=SC2310  # as above
   if tmp_target="$(mirrored_path "${tmp_host}")"; then
     tmp_env=(-e "CLAUDE_CODE_TMPDIR=${tmp_target}")
@@ -640,7 +951,9 @@ run() {
   docker run "${tty[@]}" --rm \
     --name "${CONTAINER}" \
     --cidfile "${CIDFILE}" \
-    --privileged \
+    "${ISOLATION_ARGS[@]}" \
+    ${DEVICE_ARGS[@]+"${DEVICE_ARGS[@]}"} \
+    ${PIDS_ARGS[@]+"${PIDS_ARGS[@]}"} \
     --hostname "${NAME}" \
     -e TZ="${SANDBOX_TIMEZONE}" \
     -e SANDBOX_CACHE_PATHS="${CACHE_PATHS[*]-}" \
@@ -648,6 +961,14 @@ run() {
     -e SANDBOX_HISTORY_DAYS="${SANDBOX_HISTORY_DAYS}" \
     -e SANDBOX_REMOTE_CONTROL="${SANDBOX_REMOTE_CONTROL}" \
     -e SANDBOX_PASTE_CHANNEL="${SANDBOX_PASTE_CHANNEL}" \
+    -e SANDBOX_BLOCK_LOCAL_NETWORK="${SANDBOX_BLOCK_LOCAL_NETWORK}" \
+    -e SANDBOX_LOCAL_NETWORK_ALLOW="${LOCAL_NETWORK_ALLOW[*]-}" \
+    -e SANDBOX_SUDO="${SANDBOX_SUDO}" \
+    -e SANDBOX_DEVICE_PATHS="${DEVICE_PATHS[*]-}" \
+    -e SANDBOX_PROTECTED="${protected[*]-}" \
+    -e SANDBOX_PUBLISHED_PORTS="${PUBLISH_PORTS[*]-}" \
+    -e SANDBOX_CONFIG_REL="${CONFIG_DIR#"${PROJECT_DIR}"/}" \
+    ${ROOT_COMMAND:+-e "SANDBOX_ROOT_COMMAND=${ROOT_COMMAND}"} \
     -e SANDBOX_REPO_DIR="${REPO_DIR}" \
     "${TERMINAL_ENV[@]}" \
     ${tmp_env[@]+"${tmp_env[@]}"} \
@@ -659,18 +980,38 @@ run() {
     -v "${history_mount}":/home/dev/.claude \
     ${mirror_mounts[@]+"${mirror_mounts[@]}"} \
     -v "${tmp_mount}":"${tmp_target}" \
+    ${protect_mounts[@]+"${protect_mounts[@]}"} \
     ${CACHE_MOUNTS[@]+"${CACHE_MOUNTS[@]}"} \
     ${PUBLISH[@]+"${PUBLISH[@]}"} \
     ${RUN_ARGS[@]+"${RUN_ARGS[@]}"} \
     "${IMAGE}" "$@" <&3 &
-  wait $!
+  client=$!
+  show_published_ports "${client}"
+  wait "${client}"
+}
+
+# Where the published ports (SANDBOX_PORTS) are on the host, once the container is up: a bare `8081`
+# gets a port docker picks, which nothing else shows. Printed before the session starts drawing (the
+# entrypoint's nested dockerd takes longer than this), and given up on after 10s.
+show_published_ports() {  # <the docker run client's pid>
+  local tries=0 ports
+  [[ "${#PUBLISH[@]}" -gt 0 ]] || return 0
+  while (( tries < 20 )) && kill -0 "$1" 2>/dev/null; do
+    ports="$(docker port "${CONTAINER}" 2>/dev/null)" || ports=""
+    if [[ -n "${ports}" ]]; then
+      printf '%s\n' "${ports}" | sed 's/^\(.*\) -> \(.*\)$/[sandbox] port \1 is published at \2/' >&2
+      return 0
+    fi
+    sleep 0.5
+    tries=$(( tries + 1 ))
+  done
 }
 
 # A second shell in the sandbox that is ALREADY running (a launch would replace it instead). It joins
 # the same container: same nested dockerd, same files, same environment (the image's ENV and the
 # `docker run -e` values are the container's own, so `docker exec` inherits them).
 attach() {
-  if ! docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+  if ! docker container inspect "${CONTAINER}" >/dev/null 2>&1; then
     echo "No ${CONTAINER} container is running - start one first." >&2
     exit 1
   fi
@@ -679,6 +1020,7 @@ attach() {
   # Where the sandbox's Claude runs (see mirrored_path): the launch passed it as SANDBOX_WORKDIR, and a
   # sandbox started by an older version has none.
   workdir="$(docker exec "${CONTAINER}" printenv SANDBOX_WORKDIR 2>/dev/null)" || workdir=""
+  docker port "${CONTAINER}" 2>/dev/null | sed 's/^\(.*\) -> \(.*\)$/[sandbox] port \1 is published at \2/' >&2 || true
   docker exec "${tty[@]}" -u dev -w "${workdir:-/work}" -e HOME=/home/dev -e USER=dev "${TERMINAL_ENV[@]}" \
     "${CONTAINER}" "${@:-bash}"
 }
@@ -690,14 +1032,18 @@ attach() {
 #
 # Prefers `docker exec` into a RUNNING sandbox so a live Claude session is never interrupted; only
 # starts a container when none is up. Runs as root inside.
+ROOT_COMMAND=""
 PRUNE_CMD='docker system df; docker builder prune -af --max-used-space=20GB; docker image prune -af --filter until=336h; docker container prune -f; docker volume prune -f; echo; docker system df'
 prune() {
-  if docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+  # `docker container inspect`, not `docker inspect`: the image has the container's name too, and a plain
+  # inspect found it, so prune (and attach) took the sandbox for running whenever its image existed.
+  if docker container inspect "${CONTAINER}" >/dev/null 2>&1; then
     echo "[sandbox] pruning inside the running ${CONTAINER} (session untouched)..."
     docker exec -u root "${CONTAINER}" bash -c "${PRUNE_CMD}"
   else
     echo "[sandbox] no ${CONTAINER} running - starting one to prune..."
-    run sudo bash -c "${PRUNE_CMD}"
+    # As root (entrypoint.sh's SANDBOX_ROOT_COMMAND): `dev` has no sudo.
+    ROOT_COMMAND="${PRUNE_CMD}" run
   fi
 }
 
@@ -953,8 +1299,32 @@ add_release_content() {  # <"init"|"update">
   sync_run_configs
   remove_shadowing_run_configs
   ensure_config
+  ensure_devices_setting
   ensure_claude_rules "${rel}"
   ensure_claude_settings "${rel}"
+}
+
+# 1.3.0 stopped running the sandbox --privileged, which had handed it every host device; a device is now
+# passed in only when SANDBOX_DEVICES names it. A project whose configuration uses /dev/kvm (an Android
+# emulator: bin/emulator.sh in examples/android-gradle, DiceFive, LudoPlus) would lose it on update, so
+# the setting is added to its sandbox.conf - once: a sandbox.conf that sets SANDBOX_DEVICES at all
+# (even to nothing) has made its own choice.
+ensure_devices_setting() {
+  local conf="${CONFIG_DIR}/sandbox.conf" uses
+  [[ -f "${conf}" ]] || return 0
+  grep -qE '^[[:space:]]*SANDBOX_DEVICES=' "${conf}" && return 0
+  for uses in "${CONFIG_DIR}"/{Dockerfile,bin,entrypoint.d,setup.d}; do
+    [[ -e "${uses}" ]] || continue
+    if grep -rqsF -- /dev/kvm "${uses}"; then
+      printf '\n%s\n%s\n%s\n' \
+        "# Host devices passed in (space-separated /dev paths). Added by ai-sandbox's update: the sandbox is" \
+        "# no longer --privileged, which passed in every device, and this configuration uses /dev/kvm." \
+        'SANDBOX_DEVICES="/dev/kvm"' >> "${conf}"
+      echo "  updated  ${conf#"${PROJECT_DIR}"/} (SANDBOX_DEVICES=\"/dev/kvm\", for the emulator)"
+      CHANGED=$((CHANGED + 1))
+      return 0
+    fi
+  done
 }
 
 init() {
@@ -1158,6 +1528,9 @@ update_versions() {
   "${HERE}/.github/scripts/update_dependency_versions.sh" ${options[@]+"${options[@]}"} --dockerfiles "${dockerfiles[@]}"
 }
 
+usage() { sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"; }
+commands() { usage | sed -n '/^  ai-sandbox\/sandbox.sh/,/^$/p' | sed '$d'; }
+
 case "${1:-}" in
   build)    ensure_config; build ;;
   stop)     stop ;;
@@ -1174,7 +1547,13 @@ case "${1:-}" in
   continue) shift; run claude --dangerously-skip-permissions --continue "$@" ;;
   resume)   shift; run claude --dangerously-skip-permissions --resume "$@" ;;
   run)      shift; run "$@" ;;
-  -h|--help|help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}" ;;
+  -h|--help|help) usage ;;
   "")       run ;;            # default: interactive claude (entrypoint default)
-  *)        run "$@" ;;
+  # Anything else is a mistake, not a command to run: a typo (`stauts`), or a command this version
+  # doesn't have, once rebuilt the image and REPLACED the running sandbox before failing with
+  # `exec: <word>: not found`. A command for the sandbox goes after `run`.
+  *)        echo "[sandbox] unknown command '$1' - to run a command in the sandbox: sandbox.sh run $*" >&2
+            echo >&2
+            commands >&2
+            exit 2 ;;
 esac
