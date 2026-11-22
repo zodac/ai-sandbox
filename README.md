@@ -55,15 +55,21 @@ In IntelliJ, the run configurations appear on their own (`.run/` is loaded witho
 | `Claude Sandbox (Paste Image)`   | hand the clipboard's image to Claude (see *Pasting an image* below)      |
 
 They reference the launcher only as `$PROJECT_DIR$/ai-sandbox/sandbox.sh`, so they hold no host path
-and are safe to commit. All but `Stop` and `Paste Image` have **Execute in the terminal** ticked:
-Claude's TUI needs a real PTY, and without one `sandbox.sh` falls back to non-interactive mode.
+and are safe to commit. All but `Stop` have **Execute in the terminal** ticked: Claude's TUI needs a
+real PTY, and without one `sandbox.sh` falls back to non-interactive mode (`Paste Image` runs there so
+it sits beside the running sandbox). `sandbox.sh update` keeps them in line with the release: it
+overwrites a changed one and deletes one the release no longer has, so don't edit them, and don't give
+a project's own configurations a name starting with `Claude Sandbox`.
 
 **Pasting an image.** Ctrl+V of a screenshot doesn't work in the sandbox: Claude reads the clipboard
 itself, and the sandbox is deliberately given no access to the host's display (that would let it log
 keystrokes or read every password you copy). Instead, copy the screenshot, run
-`Claude Sandbox (Paste Image)` (`sandbox.sh paste-image`), then press Ctrl+V in Claude. It saves the
-clipboard's image into Claude's temporary directory, which the sandbox can see, and replaces the
-clipboard with that file's path, which Claude attaches as the image. It runs on the host (wl-paste or
+`Claude Sandbox (Paste Image)` (`sandbox.sh paste-image`). It saves the clipboard's image into Claude's
+temporary directory, which the sandbox can see, and the running Claude session picks it up by itself
+within a second (a Claude Code *channel*, `image/final/paste-channel.mjs`) and answers with one line,
+asking what you want done with it; it reads the image once you say. That is one short turn per paste,
+and nothing otherwise. `SANDBOX_PASTE_CHANNEL=false` turns the channel off. The clipboard then holds the image's path, so
+Ctrl+V in Claude works too. It runs on the host (wl-paste or
 xclip on Linux, osascript on macOS, PowerShell on Windows) and never touches the sandbox. For a
 keyboard shortcut, add it as an IntelliJ External Tool (*Settings → Tools → External Tools*: program
 `$ProjectFileDir$/ai-sandbox/sandbox.sh`, arguments `paste-image`, working directory
@@ -210,6 +216,7 @@ file sets that is not listed here gets a warning, since it would otherwise silen
 | `SANDBOX_RUN_ARGS`       | *(empty)*      | extra `docker run` flags, passed through as-is                                                                                    |
 | `SANDBOX_HISTORY_DAYS`   | `14`           | days of Claude session history (transcripts, file history, tool results) to keep; older is deleted at startup                     |
 | `SANDBOX_REMOTE_CONTROL` | `true`         | whether Claude starts its Remote Control bridge with each session                                                                 |
+| `SANDBOX_PASTE_CHANNEL`  | `true`         | whether the running Claude session gets each `paste-image` image by itself                                                        |
 | `SANDBOX_NAME`           | derived        | pin the docker name prefix instead of deriving it from the checkout's path                                                        |
 | `SANDBOX_TZ`             | host's zone    | the sandbox's timezone (IANA name)                                                                                                |
 

@@ -1,0 +1,11 @@
+{
+  "name": "ai-sandbox",
+  "owner": { "name": "ai-sandbox" },
+  "plugins": [
+    {
+      "name": "sandbox-paste",
+      "source": "./sandbox-paste",
+      "description": "Hands the running Claude session each image `sandbox.sh paste-image` saves (a channel)"
+    }
+  ]
+}

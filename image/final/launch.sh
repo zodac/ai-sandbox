@@ -208,4 +208,35 @@ if [[ "${RUN_SETUP:-0}" = "1" ]]; then
   /usr/local/bin/sandbox-setup.sh || true
 fi
 
+# ── The paste-image channel ──────────────────────────────────────────────────
+# `sandbox.sh paste-image` (on the host) saves the clipboard's image where the sandbox sees it; the
+# channel sandbox-paste-channel.mjs (paste-channel.mjs) pushes each new one into the running session, so
+# Claude gets it without a Ctrl+V of its path. A channel is an MCP server Claude starts itself. Loaded
+# as an approved channel PLUGIN - sandbox-paste@ai-sandbox, from the image's own plugin marketplace,
+# approved by the image's /etc/claude-code/managed-settings.json - because a plain server of our own
+# needs --dangerously-load-development-channels, which Claude asks to confirm at every start.
+#
+# The plugin is installed once into Claude's config (the persisted .claude-history), at user scope; the
+# plugin only names the server's path in the image, so a new image needs no reinstall. `--channels` is
+# added to an interactive `claude` started here - the bare launch, and the run configurations'
+# `claude --dangerously-skip-permissions --continue|--resume` - not to a subcommand (`claude mcp ...`) or
+# a `-p` run, and not to a `claude` started by hand in a shell. SANDBOX_PASTE_CHANNEL=false turns it off.
+PASTE_PLUGIN=sandbox-paste@ai-sandbox
+paste_plugin_installed() {
+  jq -e --arg p "${PASTE_PLUGIN}" '.plugins[$p] != null' "${CCD}/plugins/installed_plugins.json" >/dev/null 2>&1
+}
+if [[ "${SANDBOX_PASTE_CHANNEL:-true}" == "true" && "${1-}" == claude && "${2--}" == -* ]] \
+     && [[ " ${*:2} " != *" -p "* && " ${*:2} " != *" --print "* ]]; then
+  if ! paste_plugin_installed; then
+    claude plugin marketplace add /usr/local/share/ai-sandbox/claude-plugins >/dev/null 2>&1
+    claude plugin install "${PASTE_PLUGIN}" >/dev/null 2>&1
+    if paste_plugin_installed; then
+      echo "[sandbox] installed the paste-image channel plugin (${PASTE_PLUGIN})"
+    else
+      echo "[sandbox] WARN: could not install the paste-image channel plugin - paste images with Ctrl+V" >&2
+    fi
+  fi
+  set -- claude --channels "plugin:${PASTE_PLUGIN}" "${@:2}"
+fi
+
 exec "$@"

@@ -80,7 +80,7 @@ fi
 # otherwise silently do nothing, so it warns. Names already in the environment are left out of that:
 # SANDBOX_CONFIG_DIR is one, and they are not the file's doing.
 SETTINGS=(SANDBOX_NAME SANDBOX_PORTS SANDBOX_CACHE_VOLUMES SANDBOX_NPM_DIRS SANDBOX_ENV SANDBOX_BUILD_ARGS
-          SANDBOX_RUN_ARGS SANDBOX_TZ SANDBOX_HISTORY_DAYS SANDBOX_REMOTE_CONTROL)
+          SANDBOX_RUN_ARGS SANDBOX_TZ SANDBOX_HISTORY_DAYS SANDBOX_REMOTE_CONTROL SANDBOX_PASTE_CHANNEL)
 declare -A FROM_ENV=()
 for setting in "${SETTINGS[@]}"; do
   if [[ -n "${!setting+set}" ]]; then FROM_ENV["${setting}"]="${!setting}"; fi
@@ -188,6 +188,14 @@ for pair in ${EXTRA_BUILD_ARGS+"${EXTRA_BUILD_ARGS[@]}"}; do BUILD_ARGS+=(--buil
 SANDBOX_REMOTE_CONTROL="${SANDBOX_REMOTE_CONTROL:-true}"
 if [[ "${SANDBOX_REMOTE_CONTROL}" != "true" && "${SANDBOX_REMOTE_CONTROL}" != "false" ]]; then
   echo "[sandbox] SANDBOX_REMOTE_CONTROL must be true or false, not '${SANDBOX_REMOTE_CONTROL}'" >&2
+  exit 1
+fi
+
+# Whether Claude loads the paste-image channel (launch.sh), which hands it each image `paste-image` saves
+# without a Ctrl+V. On by default.
+SANDBOX_PASTE_CHANNEL="${SANDBOX_PASTE_CHANNEL:-true}"
+if [[ "${SANDBOX_PASTE_CHANNEL}" != "true" && "${SANDBOX_PASTE_CHANNEL}" != "false" ]]; then
+  echo "[sandbox] SANDBOX_PASTE_CHANNEL must be true or false, not '${SANDBOX_PASTE_CHANNEL}'" >&2
   exit 1
 fi
 
@@ -512,8 +520,30 @@ remove_existing() {
 # the top level, where a `local` of run()'s is long out of scope — under `set -u` the trap body then dies
 # with "cidfile: unbound variable" before it can stop anything or clean the file up.
 CIDFILE=""
+
+# Delete every *.run.xml under Claude's temporary directory. That directory is inside the project
+# (CLAUDE_TMP_DIR), and IntelliJ loads a `*.run.xml` from ANYWHERE in the project tree: a scratch project an
+# agent made there to test `init`/`update` carries `.run/Claude Sandbox*.run.xml` files with the real
+# configs' names, pointing at `$PROJECT_DIR$/ai-sandbox/sandbox.sh` relative to the PROJECT, not to the
+# scratch dir. After an IDE restart those shadow the real configs, and every launch fails with "Shell script
+# not found" (it happened here on 2026-11-22). A cleanup on launch would come too late, since the broken
+# configs are the ones that won't launch, so it runs at shutdown: from the launcher's teardown (tab or IDE
+# closed, Stop) and from `stop`. Only these files are touched, never the rest of a scratchpad.
+remove_scratch_run_configs() {
+  local count
+  if [[ ! -d "${CLAUDE_TMP_DIR}" ]]; then
+    return 0
+  fi
+  count="$(find "${CLAUDE_TMP_DIR}" -name '*.run.xml' -type f -print -delete 2>/dev/null | wc -l)" || true
+  if (( count > 0 )); then
+    echo "[sandbox] removed ${count} IntelliJ run configuration(s) left in Claude's temp dir" >&2
+  fi
+}
+
 stop_own() {
   local cidfile="$1" cid=""
+  # First, before the (up to 10s) `docker stop`: IntelliJ may SIGKILL the launcher during that grace.
+  remove_scratch_run_configs
   if [[ -z "${cidfile}" ]]; then
     return 0
   fi
@@ -617,6 +647,7 @@ run() {
     -e SANDBOX_NPM_DIRS="${SANDBOX_NPM_DIRS-}" \
     -e SANDBOX_HISTORY_DAYS="${SANDBOX_HISTORY_DAYS}" \
     -e SANDBOX_REMOTE_CONTROL="${SANDBOX_REMOTE_CONTROL}" \
+    -e SANDBOX_PASTE_CHANNEL="${SANDBOX_PASTE_CHANNEL}" \
     -e SANDBOX_REPO_DIR="${REPO_DIR}" \
     "${TERMINAL_ENV[@]}" \
     ${tmp_env[@]+"${tmp_env[@]}"} \
@@ -672,8 +703,10 @@ prune() {
 
 stop() {
   # Stopping the container triggers the running launcher's --rm + trap teardown (nested dockerd and
-  # everything it spun up dies with it). A no-op if nothing is there.
+  # everything it spun up dies with it). A no-op if nothing is there. The scratch run configs are removed
+  # here too, in case the launcher was killed before its trap could do it.
   remove_existing
+  remove_scratch_run_configs
   if (( REMOVED_EXISTING == 1 )); then
     echo "Stopped ${CONTAINER}."
   else
@@ -807,12 +840,16 @@ project_paths_ok() {  # the checks init and update's second half share
 }
 
 # What a release adds to a project, and all that init writes besides the configuration templates: each
-# run configuration, configuration file or setting the project doesn't have yet. Never overwrites or
-# removes anything: the files it finds are the project's (the run configurations may have been edited,
-# sandbox.conf and the Dockerfile always are), and a change to ai-sandbox's own behaviour arrives with
-# the submodule itself. So a release that needs an EXISTING file changed must do it here, as an
-# idempotent step of its own (ensure_claude_rules and ensure_claude_settings are such steps).
+# configuration file or setting the project doesn't have yet, and the run configurations. The
+# configuration directory is the project's (sandbox.conf and the Dockerfile are always edited), so
+# nothing there is overwritten or removed; a release that needs an EXISTING file changed must do it
+# here, as an idempotent step of its own (ensure_claude_rules and ensure_claude_settings are such steps).
+# The run configurations are ai-sandbox's, not the project's: every `.run/Claude Sandbox*.run.xml` is
+# synced to this release's templates - added, overwritten when it differs, and removed when the release
+# no longer has it - so a fix to one (Paste Image moving to the Terminal tool window, 1.3.0) reaches every
+# project. A project's own run configurations must not use the "Claude Sandbox" name prefix.
 ADDED=0
+CHANGED=0
 add_release_content() {  # <"init"|"update">
   local rel="${HERE#"${PROJECT_DIR}"/}" src templates mode="$1"
 
@@ -828,6 +865,82 @@ add_release_content() {  # <"init"|"update">
     ADDED=$((ADDED + 1))
   }
 
+  sync_run_configs() {  # .run/Claude Sandbox*.run.xml = templates/run/, exactly
+    local dst rel_dst expected current
+    for src in "${HERE}"/templates/run/*.run.xml.template; do
+      dst="${PROJECT_DIR}/.run/$(basename "${src}" .template)"
+      rel_dst="${dst#"${PROJECT_DIR}"/}"
+      if [[ ! -e "${dst}" ]]; then
+        copy_template "${src}" "${dst}"
+        continue
+      fi
+      expected="$(sed "s|@SANDBOX_DIR@|${rel}|g" "${src}")"
+      current="$(<"${dst}")"
+      if [[ "${current}" == "${expected}" ]]; then
+        [[ "${mode}" == "init" ]] && echo "  exists   ${rel_dst}"
+      else
+        printf '%s\n' "${expected}" > "${dst}"
+        echo "  updated  ${rel_dst}"
+        CHANGED=$((CHANGED + 1))
+      fi
+    done
+    for dst in "${PROJECT_DIR}"/.run/Claude\ Sandbox*.run.xml; do
+      [[ -e "${dst}" ]] || continue
+      [[ -e "${HERE}/templates/run/$(basename "${dst}").template" ]] && continue
+      rm -f "${dst}"
+      echo "  removed  ${dst#"${PROJECT_DIR}"/} (no longer in this release)"
+      CHANGED=$((CHANGED + 1))
+    done
+  }
+
+  # Any OTHER "Claude Sandbox" run configuration IntelliJ can see shadows the synced ones: it loads a
+  # `*.run.xml` from anywhere in the project, and its own local copies too, and a same-named copy with an
+  # old script path wins after a restart ("Shell script not found"). Both happened on 2026-11-22:
+  #   - a `Claude Sandbox*.run.xml` outside the root `.run/` (a scratch project's, in Claude's temp dir,
+  #     which is inside the project): deleted, wherever it is. The search skips .git and this submodule
+  #     (whose templates are `*.template`, never loaded);
+  #   - a `Claude Sandbox*` Shell Script configuration in `.idea/workspace.xml` (made by hand before the
+  #     migration, still pointing at the deleted `sandbox/sandbox.sh`) or in `.idea/runConfigurations/`:
+  #     removed. That XML is IntelliJ's local state, git-ignored, so the old one is kept as
+  #     `.idea/workspace.xml.before-ai-sandbox`. An open IntelliJ writes its in-memory copy back over it.
+  # The name prefix is ai-sandbox's (see above), so none of these can be the project's own.
+  remove_shadowing_run_configs() {
+    local found ws kept
+    found="$(find "${PROJECT_DIR}" \( -path "${PROJECT_DIR}/.git" -o -path "${HERE}" \) -prune -o \
+               -type f -name 'Claude Sandbox*.run.xml' ! -path "${PROJECT_DIR}/.run/*" -print 2>/dev/null)" || true
+    while IFS= read -r dst; do
+      [[ -n "${dst}" ]] || continue
+      rm -f "${dst}"
+      echo "  removed  ${dst#"${PROJECT_DIR}"/} (shadows .run/$(basename "${dst}"))"
+      CHANGED=$((CHANGED + 1))
+    done <<< "${found}"
+
+    for dst in "${PROJECT_DIR}"/.idea/runConfigurations/Claude_Sandbox*.xml; do
+      [[ -e "${dst}" ]] || continue
+      rm -f "${dst}"
+      echo "  removed  ${dst#"${PROJECT_DIR}"/} (a copy of a .run/ configuration)"
+      CHANGED=$((CHANGED + 1))
+    done
+
+    ws="${PROJECT_DIR}/.idea/workspace.xml"
+    if [[ -f "${ws}" ]] && grep -q '<configuration name="Claude Sandbox[^"]*" type="ShConfigurationType"' "${ws}"; then
+      # IntelliJ writes each <configuration> start and end tag on lines of their own; a self-closing one
+      # (no options) is a single line.
+      kept="$(awk '
+        skip { if ($0 ~ /<\/configuration>/) skip = 0; next }
+        /<configuration name="Claude Sandbox[^"]*" type="ShConfigurationType"/ {
+          if ($0 !~ /\/>[[:space:]]*$/) skip = 1
+          next
+        }
+        { print }' "${ws}")"
+      cp -p "${ws}" "${ws}.before-ai-sandbox"
+      printf '%s\n' "${kept}" > "${ws}"
+      echo "  updated  .idea/workspace.xml (removed its own \"Claude Sandbox\" configurations; old copy: .idea/workspace.xml.before-ai-sandbox)"
+      echo "           if $(basename "${PROJECT_DIR}") is open in IntelliJ, close and reopen it - or it writes them back"
+      CHANGED=$((CHANGED + 1))
+    fi
+  }
+
   # The configuration templates only on init: once a project is set up, its configuration directory is
   # its own - a file deleted there (an unneeded Dockerfile) must stay deleted.
   if [[ "${mode}" == "init" ]]; then
@@ -837,9 +950,8 @@ add_release_content() {  # <"init"|"update">
       copy_template "${src}" "${CONFIG_DIR}/${src#"${HERE}/templates/configuration/"}"
     done <<< "${templates}"
   fi
-  for src in "${HERE}"/templates/run/*.run.xml.template; do
-    copy_template "${src}" "${PROJECT_DIR}/.run/$(basename "${src}" .template)"
-  done
+  sync_run_configs
+  remove_shadowing_run_configs
   ensure_config
   ensure_claude_rules "${rel}"
   ensure_claude_settings "${rel}"
@@ -869,10 +981,10 @@ apply_update_content() {
   version="$(git -C "${HERE}" describe --tags 2>/dev/null)" || version="this version"
   echo "[sandbox] adding what ${version} brings..."
   add_release_content update
-  if (( ADDED == 0 )); then
+  if (( ADDED + CHANGED == 0 )); then
     echo "[sandbox] no new files; review and commit the moved ${HERE#"${PROJECT_DIR}"/} submodule and any changed settings."
   else
-    echo "[sandbox] ${ADDED} file(s) added; review and commit them with the moved ${HERE#"${PROJECT_DIR}"/} submodule."
+    echo "[sandbox] ${ADDED} file(s) added, ${CHANGED} run configuration(s) updated or removed; review and commit them with the moved ${HERE#"${PROJECT_DIR}"/} submodule."
   fi
 }
 
@@ -941,9 +1053,10 @@ update() {
 # every password you copy without ever having focus (Wayland, on compositors with the data-control
 # protocol). So the HOST reads the clipboard, and only when you ask: this saves its image (as PNG) into
 # Claude's temporary directory, which the sandbox sees (see mirrored_path), and replaces it on the
-# clipboard with that file's path in the sandbox. Ctrl+V in Claude then pastes the path, which Claude
-# attaches as the image, as it does a file dragged into the terminal. Nothing in the sandbox can ask
-# for it. Never starts, stops or looks at a sandbox; the pictures go when SANDBOX_HISTORY_DAYS says.
+# clipboard with that file's path in the sandbox. The running Claude session picks the image up by itself
+# (image/final/paste-channel.mjs, unless SANDBOX_PASTE_CHANNEL=false); Ctrl+V in Claude pastes the path,
+# which Claude attaches as the image, as it does a file dragged into the terminal. Nothing in the sandbox
+# can ask for it. Never starts, stops or looks at a sandbox; the pictures go when SANDBOX_HISTORY_DAYS says.
 #
 # Runs on the host, so it uses the host's own tools: wl-paste/wl-copy (Wayland) or xclip (X11) on
 # Linux, osascript/pbcopy on macOS, PowerShell/clip.exe on Windows.
@@ -1008,9 +1121,9 @@ paste_image() {
   in_sandbox="${in_sandbox}/pastes/${name}"
   # shellcheck disable=SC2310  # a failure only means the path has to be copied by hand
   if text_to_clipboard "${in_sandbox}"; then
-    echo "[sandbox] saved the clipboard's image; its path is on the clipboard now - paste it into Claude:"
+    echo "[sandbox] saved the clipboard's image; the running Claude session gets it by itself (its path is on the clipboard too):"
   else
-    echo "[sandbox] saved the clipboard's image (could not put its path on the clipboard) - paste this into Claude:"
+    echo "[sandbox] saved the clipboard's image; the running Claude session gets it by itself (could not put its path on the clipboard):"
   fi
   echo "${in_sandbox}"
 }

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sandbox-paste": {
+      "command": "node",
+      "args": ["/usr/local/bin/sandbox-paste-channel.mjs"]
+    }
+  }
+}

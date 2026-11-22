@@ -68,6 +68,15 @@ ENV CLAUDE_CODE_TMPDIR=/opt/ai-sandbox/tmp \
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=0755 launch.sh     /usr/local/bin/sandbox-launch.sh
 COPY --chmod=0755 setup.sh      /usr/local/bin/sandbox-setup.sh
+COPY --chmod=0755 paste-channel.mjs /usr/local/bin/sandbox-paste-channel.mjs
+# The paste-image channel, as an APPROVED channel plugin (see launch.sh): a local plugin marketplace
+# holding it, and the managed settings that approve it. Claude reads managed settings only from
+# /etc/claude-code (root-owned, so nothing in a session can widen it), and a channel it approves there
+# loads with `--channels` - without the "Loading development channels" confirmation that
+# --dangerously-load-development-channels asks for at every start. No --chmod: it would apply to the
+# directories COPY creates, and the build context's modes (0644 files, 0755 directories) are right.
+COPY claude-plugins/        /usr/local/share/ai-sandbox/claude-plugins/
+COPY managed-settings.json  /etc/claude-code/managed-settings.json
 # Persistent shell history for interactive shells (see bashrc.sh). Sourced LAST from dev's ~/.bashrc,
 # so its sizes win over the Debian skeleton's defaults; the line is appended once, at image build.
 # Into /etc itself, not a new /etc/ai-sandbox/: COPY --chmod applies the mode to a directory it creates

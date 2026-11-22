@@ -1,0 +1,5 @@
+{
+  "name": "sandbox-paste",
+  "version": "1.0.0",
+  "description": "Hands the running Claude session each image `sandbox.sh paste-image` saves (a channel)"
+}

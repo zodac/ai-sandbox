@@ -1,0 +1,4 @@
+{
+  "channelsEnabled": true,
+  "allowedChannelPlugins": [{ "marketplace": "ai-sandbox", "plugin": "sandbox-paste" }]
+}
