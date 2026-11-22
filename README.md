@@ -144,12 +144,13 @@ launch to the sessions of earlier launches, which ran in `/work`.
   unless `SANDBOX_SUDO=true`: root's work (the firewall, opening `SANDBOX_DEVICES` to `dev`) is done by
   the entrypoint at start, as in Anthropic's reference devcontainer. Install tools in the project's
   Dockerfile instead (a `sudo` in a session says so).
-- **Not `--privileged`.** The nested daemon gets only what it needs: `CAP_SYS_ADMIN` and `CAP_NET_ADMIN`,
-  seccomp and AppArmor off, and a cgroup namespace of its own; the entrypoint makes this container's
-  cgroup tree and `/proc/sys/net` writable, and nothing else in `/proc/sys`. So no host device is
-  visible but the ones `SANDBOX_DEVICES` names (`--privileged` showed it the raw disks too), and the
-  sandbox cannot load kernel modules, do raw I/O or set the host's clock. `SANDBOX_PRIVILEGED=true` brings
-  `--privileged` back for a project that needs it.
+- **Not `--privileged`.** The nested daemon gets only what it needs: `CAP_SYS_ADMIN`, `CAP_NET_ADMIN` and
+  `CAP_SYS_PTRACE` (to set up a nested container whose user is not root), seccomp and AppArmor off, and a
+  cgroup namespace of its own; the entrypoint makes this container's cgroup tree and `/proc/sys/net`
+  writable, and nothing else in `/proc/sys`. So no host device is visible but the ones `SANDBOX_DEVICES`
+  names (`--privileged` showed it the raw disks too), and the sandbox cannot load kernel modules, do raw
+  I/O or set the host's clock. `SANDBOX_PRIVILEGED=true` brings `--privileged` back for a project that
+  needs it.
 - **The host's local network is blocked, fail-closed** (`SANDBOX_BLOCK_LOCAL_NETWORK`): new connections from the
   sandbox, or from its nested containers, to private, link-local (cloud metadata), CGNAT/Tailscale and
   multicast addresses, and to the Docker gateway (the host itself), are refused. The internet, DNS and

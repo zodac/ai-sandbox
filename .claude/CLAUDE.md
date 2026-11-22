@@ -101,7 +101,9 @@ reference material only (git-ignored), to be deleted once everything has been mi
 - **IntelliJ run configs** are generated into the project's `.run/` (committed). They must contain no
   host file paths or personal information - only `$PROJECT_DIR$`-relative paths.
 - Only the project directory (and the config dir) is mounted; never `$HOME` or the host Docker socket.
-- **Not `--privileged`** (from 1.3.0): the nested daemon gets `CAP_SYS_ADMIN` + `CAP_NET_ADMIN`, seccomp and
+- **Not `--privileged`** (from 1.3.0): the nested daemon gets `CAP_SYS_ADMIN` + `CAP_NET_ADMIN` (+
+  `CAP_SYS_PTRACE` from 1.3.1: without it, every nested container with a non-root user failed with
+  `bind-mount /proc/<pid>/ns/net ...: permission denied` - the linters' images among them), seccomp and
   AppArmor off and `--cgroupns private`; `entrypoint.sh` (`open_up_for_dockerd`) makes the cgroup tree
   writable (moving everything to an `init` child so the controllers can be delegated) and only
   `/proc/sys/net` - never all of `/proc/sys` (`systempaths=unconfined` would expose

@@ -211,9 +211,11 @@ fi
 # AND every host device - the raw disks among them, so root in the sandbox could mount the host's
 # filesystem whatever was or wasn't bind-mounted, load kernel modules, or write the host's clock. It
 # needs much less: CAP_SYS_ADMIN (mounts: overlayfs, its containers' /proc) and CAP_NET_ADMIN (their
-# networks), seccomp and AppArmor off (Docker's default profiles refuse those mounts, and runc's own
-# setup), and a cgroup namespace of its own, so /sys/fs/cgroup is this container's subtree, which
-# entrypoint.sh makes writable along with /proc/sys/net (and nothing else in /proc/sys). That leaves
+# networks), CAP_SYS_PTRACE (a container whose user is not root: the daemon, root but a different uid,
+# may open that process's /proc/<pid>/ns/net only with it - without, every `docker run --user` or image
+# with a USER failed with "bind-mount /proc/<pid>/ns/net ...: permission denied"), seccomp and AppArmor
+# off (Docker's default profiles refuse those mounts, and runc's own setup), and a cgroup namespace of
+# its own, so /sys/fs/cgroup is this container's subtree, which entrypoint.sh makes writable along with /proc/sys/net (and nothing else in /proc/sys). That leaves
 # out every device but the default few, and CAP_SYS_MODULE, CAP_SYS_RAWIO, CAP_SYS_TIME, CAP_SYS_BOOT
 # and the rest of --privileged's extras.
 #
@@ -229,7 +231,7 @@ fi
 if [[ "${SANDBOX_PRIVILEGED}" == "true" ]]; then
   ISOLATION_ARGS=(--privileged)
 else
-  ISOLATION_ARGS=(--cap-add SYS_ADMIN --cap-add NET_ADMIN
+  ISOLATION_ARGS=(--cap-add SYS_ADMIN --cap-add NET_ADMIN --cap-add SYS_PTRACE
                   --security-opt seccomp=unconfined --security-opt apparmor=unconfined --cgroupns private)
 fi
 

@@ -9,8 +9,8 @@ CONFIG_DIR=/opt/ai-sandbox/config
 
 # ── What the nested daemon needs, without --privileged ───────────────────────
 # sandbox.sh no longer runs the sandbox --privileged (which handed it every host device, raw disks
-# included, and every capability): it adds only CAP_SYS_ADMIN and CAP_NET_ADMIN, with seccomp and
-# AppArmor off and a private cgroup namespace (see SANDBOX_PRIVILEGED there). Docker then mounts two
+# included, and every capability): it adds only CAP_SYS_ADMIN, CAP_NET_ADMIN and CAP_SYS_PTRACE, with
+# seccomp and AppArmor off and a private cgroup namespace (see SANDBOX_PRIVILEGED there). Docker then mounts two
 # things read-only that a nested dockerd must write, so they are opened up here, as root, before it
 # starts. Both are no-ops in a --privileged sandbox, where they are writable already.
 #
