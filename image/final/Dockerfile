@@ -69,6 +69,7 @@ COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=0755 launch.sh     /usr/local/bin/sandbox-launch.sh
 COPY --chmod=0755 setup.sh      /usr/local/bin/sandbox-setup.sh
 COPY --chmod=0755 paste-channel.mjs /usr/local/bin/sandbox-paste-channel.mjs
+COPY --chmod=0755 ide-bridge.mjs /usr/local/bin/sandbox-ide-bridge.mjs
 # The paste-image channel, as an APPROVED channel plugin (see launch.sh): a local plugin marketplace
 # holding it, and the managed settings that approve it. Claude reads managed settings only from
 # /etc/claude-code (root-owned, so nothing in a session can widen it), and a channel it approves there

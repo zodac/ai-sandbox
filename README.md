@@ -261,6 +261,7 @@ file sets that is not listed here gets a warning, since it would otherwise silen
 | `SANDBOX_HISTORY_DAYS`        | `14`             | days of Claude session history (transcripts, file history, tool results) to keep; older is deleted at startup                     |
 | `SANDBOX_REMOTE_CONTROL`      | `true`           | whether Claude starts its Remote Control bridge with each session                                                                 |
 | `SANDBOX_PASTE_CHANNEL`       | `true`           | whether the running Claude session gets each `paste-image` image by itself                                                        |
+| `SANDBOX_IDE_CONTEXT`         | `true`           | whether Claude sees the open file and selected lines in the host's IDE (this project's files only)                                |
 | `SANDBOX_DEVICES`             | *(empty)*        | host devices to pass in (`/dev/kvm`); one the host lacks is skipped with a warning                                                |
 | `SANDBOX_PIDS_LIMIT`          | `32768`          | most processes (threads included) the sandbox may run, nested containers too; `unlimited` turns it off                            |
 | `SANDBOX_BLOCK_LOCAL_NETWORK` | `true`           | refuse connections to the host's LAN, the host and link-local addresses                                                           |
@@ -331,6 +332,16 @@ than after IntelliJ has escalated to SIGKILL. `--rm` then removes the container,
 `.claude-history/` is a plain directory in the checkout (with a `*` `.gitignore` of its own, so no
 project `.gitignore` needs to know about it): inspect it with `ls`, back it up with `cp -r`, wipe it
 with `rm -rf`. The rest are pure rebuildable caches, so they stay named volumes.
+
+**The open file and selection in your IDE** reach Claude as they do outside the sandbox (`⧉ 2 lines selected`,
+`⧉ In code.txt`, and the plugin's *Send to Claude* shortcut), when an IDE with the Claude Code plugin has the
+project open at launch. It goes one way: [`host/ide-relay.py`](host/ide-relay.py) listens to the plugin on the
+host and writes the latest selection to a directory the sandbox mounts read-only, and
+[`image/final/ide-bridge.mjs`](image/final/ide-bridge.mjs) stands in for the IDE inside. The sandbox gets neither
+the plugin's token nor a route to it, so there are no IDE diffs or diagnostics in there, and only files inside
+the project are passed on. A selection made before Claude connected is not seen until it changes (the plugin
+doesn't resend it). It needs `python3` on the host, and is not available on Windows. `SANDBOX_IDE_CONTEXT=false`
+turns it off.
 
 **Shell history** (`shell`, `attach`, and any interactive bash in the sandbox) is kept in
 `.claude-history/.sandbox-state/bash_history` and written after every command, so it survives a

@@ -24,6 +24,7 @@ Origin: <https://github.com/zodac/ai-sandbox>. Repo map:
   an existing file is a step of its own there. `init` on a set-up project (`sandbox.conf` exists) fails
   and suggests `update`; the `update` of 1.2.2 and older exec's the new release's plain `init`, so that
   upgrade ends in the error, with the submodule moved, and a second `update` adds the content.
+- `host/` - what runs on the host besides the launcher (`ide-relay.py`, see *IDE context*).
 - `image/base/` - the shared base image; `image/final/` - Claude Code + entrypoint/launch/setup.
 - `templates/` - what `init` copies (`configuration/`, once) and `update` adds when new (the IntelliJ `run/` configs).
 - `rules/CLAUDE.md` - the organisation rules every consuming project shares. `init` adds an import of it
@@ -102,7 +103,7 @@ reference material only (git-ignored), to be deleted once everything has been mi
   host file paths or personal information - only `$PROJECT_DIR$`-relative paths.
 - Only the project directory (and the config dir) is mounted; never `$HOME` or the host Docker socket.
 - **Not `--privileged`** (from 1.3.0): the nested daemon gets `CAP_SYS_ADMIN` + `CAP_NET_ADMIN` (+
-  `CAP_SYS_PTRACE` from 1.3.1: without it, every nested container with a non-root user failed with
+  `CAP_SYS_PTRACE` from 1.4.0: without it, every nested container with a non-root user failed with
   `bind-mount /proc/<pid>/ns/net ...: permission denied` - the linters' images among them), seccomp and
   AppArmor off and `--cgroupns private`; `entrypoint.sh` (`open_up_for_dockerd`) makes the cgroup tree
   writable (moving everything to an `init` child so the controllers can be delegated) and only
@@ -196,9 +197,22 @@ reference material only (git-ignored), to be deleted once everything has been mi
   are passed in. Claude prints a file it shows as `[image] <path>`, a link only when it knows the
   terminal (`TERMINAL_EMULATOR=JetBrains-JediTerm` for IntelliJ) - and only an openable one when the
   path exists on the host. Inline pictures are not possible in IntelliJ: Claude Code draws them only in
-  kitty/ghostty (kitty graphics) and iTerm2 3.5+. The IntelliJ plugin's IDE integration (selection
-  context, IDE diffs) was deliberately left out: it needs the host's `~/.claude/ide` tokens and a
-  route to the plugin's host-loopback websocket, i.e. a channel from the sandbox into the host IDE.
+  kitty/ghostty (kitty graphics) and iTerm2 3.5+.
+- **IDE context is a one-way relay** (`SANDBOX_IDE_CONTEXT`, on by default; not on Windows). The plugin's
+  websocket (host loopback, token in the host's `~/.claude/ide/<port>.lock`) also lets a client CALL the IDE,
+  so the sandbox gets neither the token nor a route to it. `host/ide-relay.py` (host, stdlib only; started by
+  `start_ide_relay` for an interactive launch when a lock file's workspace holds the project) is the plugin's
+  client: it writes the latest selection to `state.json` in a `mktemp -d` directory mounted read-only (not in
+  `.claude-history`, where the sandbox could plant a symlink), dropping any file whose realpath is outside the
+  project. `image/final/ide-bridge.mjs` (started by `launch.sh`) is the IDE Claude sees: a websocket MCP server
+  on the fixed port 27483 with a lock file of its own, no tools, and `CLAUDE_CODE_SSE_PORT` in the container's
+  environment - which skips Claude's check that the IDE is an ancestor process, and reaches `attach`. Its
+  `serverInfo.name` is the plugin's, as Claude asks any other IDE for diagnostics around every edit. The relay
+  sends `ide_connected` with the launcher's pid, so the plugin can find the terminal tab. The plugin loses the
+  selection there is at connect (it sends it before its server is connected; Claude on the host misses it
+  too). Full IDE integration (diffs, diagnostics) was rejected: it is a channel into the host IDE. Tested with
+  a fake IDE, a scratch sandbox and the real Claude against a mock API; against the real plugin, only the
+  connection.
 - **History retention** is `SANDBOX_HISTORY_DAYS` in `sandbox.conf` (default 14) → Claude's
   `cleanupPeriodDays`, validated on the host so a typo fails loudly.
 

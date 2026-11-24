@@ -208,6 +208,16 @@ if [[ "${RUN_SETUP:-0}" = "1" ]]; then
   /usr/local/bin/sandbox-setup.sh || true
 fi
 
+# ── The host IDE's open file and selection ───────────────────────────────────
+# Where sandbox.sh passes them in (SANDBOX_IDE: see start_ide_relay there), the stand-in IDE that hands
+# them to Claude. Claude finds it by its lock file and CLAUDE_CODE_SSE_PORT, and looks for 30s, so nothing
+# here waits for it. The lock files of earlier containers go first: no other sandbox shares this
+# ~/.claude, and a pid in one could by now be some other process's.
+rm -f "${CCD}"/ide/*.lock
+if [[ -n "${SANDBOX_IDE-}" ]]; then
+  sandbox-ide-bridge.mjs </dev/null >/tmp/sandbox-ide-bridge.log 2>&1 &
+fi
+
 # ── The paste-image channel ──────────────────────────────────────────────────
 # `sandbox.sh paste-image` (on the host) saves the clipboard's image where the sandbox sees it; the
 # channel sandbox-paste-channel.mjs (paste-channel.mjs) pushes each new one into the running session, so

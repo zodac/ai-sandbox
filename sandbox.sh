@@ -82,7 +82,7 @@ fi
 # SANDBOX_CONFIG_DIR is one, and they are not the file's doing.
 SETTINGS=(SANDBOX_NAME SANDBOX_PORTS SANDBOX_CACHE_VOLUMES SANDBOX_NPM_DIRS SANDBOX_ENV SANDBOX_BUILD_ARGS
           SANDBOX_RUN_ARGS SANDBOX_TZ SANDBOX_HISTORY_DAYS SANDBOX_REMOTE_CONTROL SANDBOX_PASTE_CHANNEL
-          SANDBOX_DEVICES SANDBOX_PIDS_LIMIT SANDBOX_BLOCK_LOCAL_NETWORK SANDBOX_LOCAL_NETWORK_ALLOW
+          SANDBOX_IDE_CONTEXT SANDBOX_DEVICES SANDBOX_PIDS_LIMIT SANDBOX_BLOCK_LOCAL_NETWORK SANDBOX_LOCAL_NETWORK_ALLOW
           SANDBOX_PRIVILEGED SANDBOX_SUDO SANDBOX_PROTECTED_PATHS)
 declare -A FROM_ENV=()
 for setting in "${SETTINGS[@]}"; do
@@ -357,6 +357,13 @@ done
 SANDBOX_PASTE_CHANNEL="${SANDBOX_PASTE_CHANNEL:-true}"
 if [[ "${SANDBOX_PASTE_CHANNEL}" != "true" && "${SANDBOX_PASTE_CHANNEL}" != "false" ]]; then
   echo "[sandbox] SANDBOX_PASTE_CHANNEL must be true or false, not '${SANDBOX_PASTE_CHANNEL}'" >&2
+  exit 1
+fi
+
+# Whether the open file and selection in the host's IDE reach the Claude in the sandbox (start_ide_relay).
+SANDBOX_IDE_CONTEXT="${SANDBOX_IDE_CONTEXT:-true}"
+if [[ "${SANDBOX_IDE_CONTEXT}" != "true" && "${SANDBOX_IDE_CONTEXT}" != "false" ]]; then
+  echo "[sandbox] SANDBOX_IDE_CONTEXT must be true or false, not '${SANDBOX_IDE_CONTEXT}'" >&2
   exit 1
 fi
 
@@ -774,6 +781,7 @@ remove_scratch_run_configs() {
 stop_own() {
   local cidfile="$1" cid=""
   # First, before the (up to 10s) `docker stop`: IntelliJ may SIGKILL the launcher during that grace.
+  stop_ide_relay
   remove_scratch_run_configs
   report_created_host_files
   report_risky_git_config
@@ -842,6 +850,46 @@ report_risky_git_config() {
        "Review them (git config --file <file> --unset <key> removes one) before you use git or IntelliJ" \
        "on the host:" >&2
   printf '%s\n' "${added}" | sed 's/^/[sandbox]     /' >&2
+}
+
+# The IDE's context in the sandbox (SANDBOX_IDE_CONTEXT): the file open in the host's IDE and the lines
+# selected in it, which the IDE's Claude Code plugin sends to a Claude on the host. The plugin's websocket
+# is on the host's loopback, behind a token, and anything that can use it can also call the IDE, so the
+# sandbox gets neither: host/ide-relay.py, on the host, listens to the plugin and writes the latest
+# selection of a file in the PROJECT into a directory of its own, mounted read-only, and
+# image/final/ide-bridge.mjs, in the sandbox, stands in for the plugin there (launch.sh starts it). A
+# directory outside the checkout, so there is nothing for the sandbox to plant a symlink in for the relay to
+# write through, and no selection is kept after the session.
+#
+# Only when an IDE that has the plugin has this project open at launch (and the host has python3);
+# otherwise the sandbox is as it was. The relay follows an IDE that restarts. A fixed port: it is in the
+# container's own network namespace, and as the container's environment an `attach`ed shell gets it too.
+IDE_PORT=27483
+IDE_ARGS=()
+IDE_RELAY_PID=""
+start_ide_relay() {  # <the project's path in the sandbox>
+  local ide state
+  IDE_ARGS=()
+  [[ "${SANDBOX_IDE_CONTEXT}" == "true" ]] || return 0
+  # Not on Windows: the paths the IDE names are not the sandbox's, and neither is python3's view of them.
+  if command -v cygpath >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then return 0; fi
+  ide="$(python3 -I "${HERE}/host/ide-relay.py" --check "${PROJECT_DIR}" 2>/dev/null)" || return 0
+  if ! state="$(mktemp -d "${TMPDIR:-/tmp}/${CONTAINER}.ide.XXXXXX")"; then
+    echo "[sandbox] WARN: no temporary directory for ${ide}'s selection - the sandbox won't see it" >&2
+    return 0
+  fi
+  python3 -I "${HERE}/host/ide-relay.py" "${PROJECT_DIR}" "$1" "${state}" "$$" </dev/null >/dev/null 2>&1 3<&- &
+  IDE_RELAY_PID=$!
+  IDE_ARGS=(-e "SANDBOX_IDE=${ide}" -e SANDBOX_IDE_DIR=/opt/ai-sandbox/ide -e "CLAUDE_CODE_SSE_PORT=${IDE_PORT}"
+            -v "${state}:/opt/ai-sandbox/ide:ro")
+  echo "[sandbox] passing the open file and selection in ${ide} to Claude (this project's files only)" >&2
+}
+
+# The relay removes its directory as it stops. It also stops by itself when the launcher is SIGKILLed.
+stop_ide_relay() {
+  [[ -n "${IDE_RELAY_PID}" ]] || return 0
+  kill "${IDE_RELAY_PID}" 2>/dev/null || true
+  IDE_RELAY_PID=""
 }
 
 run() {
@@ -950,6 +998,10 @@ run() {
   else
     tmp_target="${CLAUDE_TMP_DEFAULT}"
   fi
+  # Interactive sessions only: a scripted `run` has no one selecting anything for it.
+  if [[ "${tty[0]}" == "-it" ]]; then
+    start_ide_relay "${project_host:-/work}"
+  fi
   docker run "${tty[@]}" --rm \
     --name "${CONTAINER}" \
     --cidfile "${CIDFILE}" \
@@ -963,6 +1015,7 @@ run() {
     -e SANDBOX_HISTORY_DAYS="${SANDBOX_HISTORY_DAYS}" \
     -e SANDBOX_REMOTE_CONTROL="${SANDBOX_REMOTE_CONTROL}" \
     -e SANDBOX_PASTE_CHANNEL="${SANDBOX_PASTE_CHANNEL}" \
+    ${IDE_ARGS[@]+"${IDE_ARGS[@]}"} \
     -e SANDBOX_BLOCK_LOCAL_NETWORK="${SANDBOX_BLOCK_LOCAL_NETWORK}" \
     -e SANDBOX_LOCAL_NETWORK_ALLOW="${LOCAL_NETWORK_ALLOW[*]-}" \
     -e SANDBOX_SUDO="${SANDBOX_SUDO}" \
