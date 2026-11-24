@@ -189,6 +189,9 @@ reference material only (git-ignored), to be deleted once everything has been mi
   Rejected: a per-message UserPromptSubmit hook (runs on every message for a rare feature) and tmux
   send-keys (tmux takes over scrollback and the mouse in IntelliJ's terminal).
   Tested on X11 only; the Wayland, macOS and Windows branches are untested.
+- **Claude's copy on select is off in IntelliJ's terminal** (`launch.sh`: `copyOnSelect` in `.claude.json`,
+  only while unset). With no clipboard program Claude copies by OSC 52, which IntelliJ ignores, and shows a
+  notice on every highlight that no setting hides. IntelliJ's own Ctrl+C / right click do copy.
 - **The final image sets `LANG=C.UTF-8`** (unless the project image set one): Debian sets none, and the
   C locale mangled non-ASCII text in bash, `git` and vim.
 - **Claude's temp dir** (`CLAUDE_CODE_TMPDIR`: scratchpads, so its screenshots) is

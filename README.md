@@ -343,6 +343,11 @@ the project are passed on. A selection made before Claude connected is not seen 
 doesn't resend it). It needs `python3` on the host, and is not available on Windows. `SANDBOX_IDE_CONTEXT=false`
 turns it off.
 
+**Copying text from Claude.** The sandbox has no clipboard, so Claude's copy on select asks the terminal to
+copy instead (OSC 52), which IntelliJ's ignores. The sandbox turns it off there, unless you have set it
+yourself: highlight the text, then copy it with IntelliJ (Ctrl+C or right click). *Copy on select* in
+Claude's `/config` turns it back on, for a terminal that supports it.
+
 **Shell history** (`shell`, `attach`, and any interactive bash in the sandbox) is kept in
 `.claude-history/.sandbox-state/bash_history` and written after every command, so it survives a
 closed tab, a re-attach and a new container alike.

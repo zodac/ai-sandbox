@@ -137,6 +137,25 @@ if command -v jq >/dev/null 2>&1; then
   fi
 fi
 
+# ── No copy on select in IntelliJ's terminal ─────────────────────────────────
+# Claude copies text as it is highlighted (`copyOnSelect`, in .claude.json, on by default). With no
+# clipboard program in the sandbox it asks the terminal to do it (the OSC 52 escape), which IntelliJ's
+# ignores: nothing is copied, and every highlight shows "sent N chars via OSC 52 - if paste fails, ...".
+# So it is off there; IntelliJ's own copy (Ctrl+C, right click) works on the highlighted text either way.
+# Not in other terminals, as many do honour OSC 52, and only while it is unset: one set in Claude's
+# /config (Copy on select) is kept. Not before Claude has made the file, which is onboarding's to create.
+if [[ "${TERMINAL_EMULATOR-}" == "JetBrains-JediTerm" ]] && config_ok && command -v jq >/dev/null 2>&1 \
+     && jq -e '.copyOnSelect == null' "${CFG}" >/dev/null 2>&1; then
+  tmp="${CFG}.tmp.$$"
+  # Copied first, so that the new file has the old one's mode.
+  if cp -p "${CFG}" "${tmp}" && jq '.copyOnSelect = false' "${CFG}" > "${tmp}" && mv -f "${tmp}" "${CFG}"; then
+    echo "[sandbox] turned off Claude's copy on select, which IntelliJ's terminal does not support (/config turns it back on)"
+  else
+    rm -f "${tmp}"
+    echo "[sandbox] WARN: could not turn off Claude's copy on select in ${CFG}" >&2
+  fi
+fi
+
 # ── The host's git settings ──────────────────────────────────────────────────
 # sandbox.sh leaves a sanitised copy of the host's global git config (and global ignore file) in
 # .sandbox-state on every launch: see export_git_config there for what is left out and why. Installed
