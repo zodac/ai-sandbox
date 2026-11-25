@@ -518,8 +518,10 @@ base_image() {
 # `FROM` tag upstream, an unpinned download) is not noticed here; `sandbox.sh build` always builds.
 BUILD_KEY_LABEL='net.zodac.sandbox.build-key'
 tree_hash() {  # <directory> [<path inside it to leave out>]
-  local dir="$1" skip="${2:-}"
-  (cd "${dir}" && find . \( -path "./${skip:-/}" -prune \) -o -type f -print | LC_ALL=C sort \
+  local dir="$1" skip="${2:-}" prune=()
+  # Only with something to leave out: GNU find warns about a -path that can't match.
+  [[ -z "${skip}" ]] || prune=(-path "./${skip}" -prune -o)
+  (cd "${dir}" && find . ${prune[@]+"${prune[@]}"} -type f -print | LC_ALL=C sort \
      | while IFS= read -r file; do printf '%s\n' "${file}"; cat "${file}"; done) | cksum | cut -d' ' -f1
 }
 build_key() {  # <Claude Code version>
